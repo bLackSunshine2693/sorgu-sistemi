@@ -1055,6 +1055,25 @@ async function doUpdate(){
 }
 
 function selDb(k){
+  // Toplu GSM kilitli
+  if(k==='toplu'){
+    document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.key===k));
+    document.getElementById('main-title').textContent='📋 Toplu GSM Sorgu';
+    document.getElementById('sf').classList.remove('show');
+    document.getElementById('rc').style.display='block';
+    document.getElementById('rb').textContent='Kilitli';
+    document.getElementById('rb').className='badge-no';
+    document.getElementById('rc-badge').style.display='none';
+    document.getElementById('excel-btn').style.display='none';
+    document.getElementById('rb2').innerHTML=`
+      <div style="padding:48px;text-align:center">
+        <div style="font-size:2.5rem;margin-bottom:12px">🔒</div>
+        <div style="font-size:1rem;font-weight:700;color:var(--t1);margin-bottom:8px">Bu sorgulama ücretlidir.</div>
+        <div style="font-size:.85rem;color:var(--t2)">Yönetici ile iletişime geçin.</div>
+      </div>`;
+    hideErr();hideInfo();
+    return;
+  }
   adb=k;amode=null;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.key===k));
   const v=cfg[k];
