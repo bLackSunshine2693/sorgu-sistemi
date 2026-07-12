@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Özel dosyalar
+licenses.db
+*.lic
+*.log
+sorgu.pid
+
+# IDE
+.vscode/
+.idea/
+*.swp
