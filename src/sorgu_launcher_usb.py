@@ -24,6 +24,27 @@ LOG_FILE    = os.path.join(BASE_DIR, "sorgu.log")
 
 _mariadb_proc = None
 
+
+CURRENT_VERSION = "4.0.1"
+GITHUB_RAW_URL  = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-sistemi/main/version.json"
+
+def check_update_background():
+    """Arka planda güncelleme kontrol."""
+    import time; time.sleep(5)
+    try:
+        import urllib.request, json, urllib.parse
+        with urllib.request.urlopen(GITHUB_RAW_URL, timeout=5) as r:
+            data = json.loads(r.read().decode())
+        remote = data.get("version","0.0.0")
+        if remote > CURRENT_VERSION:
+            notes = data.get("notes","")
+            url   = data.get("download_url","")
+            try:
+                import urllib.request as req
+                req.urlopen(f"http://localhost:5001/api/set_update?v={remote}&notes={urllib.parse.quote(notes)}&url={urllib.parse.quote(url)}", timeout=3)
+            except: pass
+    except: pass
+
 def show_error(title, msg):
     try:
         import tkinter as tk, tkinter.messagebox as mb
@@ -242,6 +263,7 @@ def main():
 
     threading.Thread(target=run_flask, daemon=True).start()
     threading.Timer(2.0, lambda: webbrowser.open("http://localhost:5001")).start()
+    threading.Thread(target=check_update_background, daemon=True).start()
 
     # Ana thread canlı tut
     try:
