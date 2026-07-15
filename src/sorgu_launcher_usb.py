@@ -26,7 +26,7 @@ _mariadb_proc = None
 
 
 CURRENT_VERSION = "4.0.1"
-GITHUB_RAW_URL  = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-sistemi/main/version.json"
+GITHUB_RAW_URL  = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-version/main/version.json"
 
 def check_update_background():
     """Arka planda güncelleme kontrol."""
@@ -129,6 +129,27 @@ def start_mariadb():
 
     show_error("MariaDB başlatılamadı", f"Log: {LOG_FILE}")
     return False
+
+
+def apply_efs_encryption():
+    """EFS ile data klasörünü şifrele — sadece bir kez çalışır."""
+    flag = os.path.join(MARIADB_DIR, ".efs_done")
+    if os.path.exists(flag):
+        return
+    try:
+        data_dir = DATA_DIR.replace("/", "\\")
+        result = subprocess.run(
+            f'cipher /e /s:"{data_dir}"',
+            shell=True, capture_output=True,
+            timeout=1800, creationflags=0x08000000
+        )
+        if result.returncode == 0:
+            open(flag, "w").close()
+            log_file = os.path.join(BASE_DIR, "sorgu.log")
+            with open(log_file, "a") as f:
+                f.write("EFS şifreleme tamamlandı\n")
+    except Exception as e:
+        pass
 
 def stop_mariadb():
     global _mariadb_proc
@@ -250,6 +271,9 @@ def main():
     if not start_mariadb():
         return
     atexit.register(stop_mariadb)
+
+    # EFS şifrelemesi arka planda
+    threading.Thread(target=apply_efs_encryption, daemon=True).start()
 
     # Flask arka planda başlat
     def run_flask():

@@ -34,7 +34,7 @@ APP_PASSWORD_HASH="35ce5f0804be4660182f9df72f5b18f5f371d1d84565c6841acf608b57c2f
 
 # ── VERSİYON & GÜNCELLEME ─────────────────────────────────────────────────────
 CURRENT_VERSION   = "4.0.0"
-GITHUB_RAW_URL    = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-sistemi/main/version.json"
+GITHUB_RAW_URL    = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-version/main/version.json"
 GITHUB_RELEASE_URL= "https://github.com/bLackSunshine2693/sorgu-sistemi/releases/latest/download/SorguSistemi.zip"
 # ↑ GitHub repo adresinizi buraya yazın
 
@@ -172,37 +172,74 @@ def api_update_check():
     except Exception as e:
         return jsonify({"current": CURRENT_VERSION, "has_update": False, "error": str(e)})
 
+# Güncelleme indirme durumu
+_update_progress = {"pct": 0, "status": "idle", "error": ""}
+
+@app.route("/api/update/progress")
+def api_update_progress():
+    if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
+    return jsonify(_update_progress)
+
 @app.route("/api/update/download", methods=["POST"])
 def api_update_download():
-    """Yeni sürümü indir ve update scripti hazırla."""
+    """Yeni sürümü arka planda indir, progress takip et."""
     if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
-    try:
-        import requests as req, zipfile, shutil, tempfile
-        # Zip indir
-        log.info("Güncelleme indiriliyor...")
-        r = req.get(GITHUB_RELEASE_URL, timeout=60, stream=True)
-        r.raise_for_status()
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
-        for chunk in r.iter_content(8192):
-            tmp.write(chunk)
-        tmp.close()
-        # update.bat yaz — exe yerine yeniyi koy
-        exe_path = sys.executable if getattr(sys,"frozen",False) else "SorguSistemi.exe"
-        bat = os.path.join(BASE_DIR, "update.bat")
-        with open(bat,"w") as f:
-            f.write(f"""@echo off
-timeout /t 2 /nobreak >nul
+    global _update_progress
+    if _update_progress["status"] == "downloading":
+        return jsonify({"error":"İndirme zaten devam ediyor"}),400
+
+    def do_download():
+        global _update_progress
+        try:
+            import requests as req, tempfile, urllib.request
+            _update_progress = {"pct": 0, "status": "downloading", "error": ""}
+            log.info("Güncelleme indiriliyor...")
+
+            # download_url'yi version.json'dan al
+            try:
+                import json as _json
+                vr = req.get(GITHUB_RAW_URL, timeout=5)
+                dl_url = vr.json().get("download_url", GITHUB_RELEASE_URL)
+            except:
+                dl_url = GITHUB_RELEASE_URL
+
+            # Önce dosya boyutunu öğren
+            head = req.head(dl_url, timeout=10, allow_redirects=True)
+            total = int(head.headers.get("content-length", 0))
+
+            r = req.get(dl_url, timeout=120, stream=True)
+            r.raise_for_status()
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")
+            downloaded = 0
+            for chunk in r.iter_content(65536):
+                tmp.write(chunk)
+                downloaded += len(chunk)
+                if total > 0:
+                    _update_progress["pct"] = min(99, int(downloaded/total*100))
+            tmp.close()
+
+            # update.bat yaz
+            exe_path = sys.executable if getattr(sys,"frozen",False) else os.path.join(BASE_DIR,"SorguSistemi.exe")
+            bat = os.path.join(BASE_DIR, "update.bat")
+            with open(bat,"w",encoding="utf-8") as f:
+                f.write(f'''@echo off
+echo Guncelleme yapiliyor, lutfen bekleyin...
+timeout /t 3 /nobreak >nul
 cd /d "{BASE_DIR}"
 powershell -command "Expand-Archive -Force '{tmp.name}' '{BASE_DIR}'"
-del "{tmp.name}"
+del "{tmp.name}" 2>nul
 start "" "{exe_path}"
 del "%~f0"
-""")
-        log.info("Güncelleme hazır — update.bat oluşturuldu")
-        return jsonify({"ok": True, "bat": bat})
-    except Exception as e:
-        log.error(f"Güncelleme hatası: {e}")
-        return jsonify({"error": str(e)}), 500
+''')
+            _update_progress = {"pct": 100, "status": "done", "bat": bat, "error": ""}
+            log.info("Güncelleme hazır")
+        except Exception as e:
+            _update_progress = {"pct": 0, "status": "error", "error": str(e)}
+            log.error(f"Güncelleme hatası: {e}")
+
+    import threading
+    threading.Thread(target=do_download, daemon=True).start()
+    return jsonify({"ok": True, "message": "İndirme başladı"})
 
 @app.route("/api/config")
 def api_config():
@@ -847,9 +884,11 @@ tr:hover td{background:var(--glow-ac)}
 .gsm-cell{color:var(--gr);font-family:monospace;font-size:.73rem}
 .tree-btn{font-size:.67rem;padding:3px 8px;background:transparent;border:1px solid var(--b2);border-radius:5px;color:var(--t2);cursor:pointer;font-family:var(--font);white-space:nowrap}
 .tree-btn:hover{border-color:var(--ac);color:var(--ac)}
-.update-bar{padding:10px 16px;background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);border-radius:8px;color:var(--yw);font-size:.82rem;margin-bottom:12px;display:none;align-items:center;justify-content:space-between;gap:10px}
+.update-bar{padding:10px 16px;background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);border-radius:8px;color:var(--yw);font-size:.82rem;margin-bottom:12px;display:none;flex-direction:column;gap:8px}
 .update-bar.show{display:flex}
 .update-bar .btn-upd{padding:5px 14px;background:var(--yw);border:none;border-radius:6px;color:#000;font-weight:700;cursor:pointer;font-size:.78rem;font-family:var(--font)}
+.upd-progress{height:6px;background:var(--b2);border-radius:4px;overflow:hidden;display:none}
+.upd-progress-fill{height:100%;background:var(--yw);border-radius:4px;transition:width .3s}
 .info-bar{padding:8px 14px;background:rgba(79,158,255,.08);border:1px solid rgba(79,158,255,.2);border-radius:7px;font-size:.8rem;color:var(--ac);margin-bottom:10px;display:none}
 .info-bar.show{display:block}
 .upload-area{padding:16px;border:2px dashed var(--b2);border-radius:10px;text-align:center;cursor:pointer;transition:all .2s}
@@ -893,8 +932,17 @@ tr:hover td{background:var(--glow-ac)}
     </div>
     <div class="main-content">
       <div class="update-bar" id="update-bar">
-        <span id="update-msg">🆕 Yeni sürüm mevcut</span>
-        <button class="btn-upd" onclick="doUpdate()">⬇️ Güncelle</button>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+          <span id="update-msg">🆕 Yeni sürüm mevcut</span>
+          <button class="btn-upd" id="update-btn" onclick="doUpdate()">⬇️ Güncelle</button>
+        </div>
+        <div class="upd-progress" id="upd-progress">
+          <div class="upd-progress-fill" id="upd-fill" style="width:0%"></div>
+        </div>
+        <div id="upd-warn" style="font-size:.75rem;color:var(--rd);display:none;font-weight:600">
+          ⚠️ Güncelleme tamamlanana kadar uygulamayı KAPATMAYIN!
+        </div>
+        <div id="upd-pct" style="font-size:.75rem;text-align:center;display:none">%0 indiriliyor...</div>
       </div>
       <div class="em" id="em"></div>
       <div class="info-bar" id="info-bar"></div>
@@ -1043,15 +1091,52 @@ async function checkUpdate(){
   }catch(e){}
 }
 
+let _updateInterval=null;
 async function doUpdate(){
-  if(!confirm('Güncelleme indirilecek. Uygulama yeniden başlayacak. Devam?'))return;
-  document.getElementById('update-msg').textContent='⏳ İndiriliyor...';
+  if(!confirm('Güncelleme indirilecek. Tamamlanana kadar kapatmayın. Devam?'))return;
+  document.getElementById('update-btn').disabled=true;
+  document.getElementById('update-btn').textContent='⏳ Başlatılıyor...';
+  document.getElementById('upd-progress').style.display='block';
+  document.getElementById('upd-warn').style.display='block';
+  document.getElementById('upd-pct').style.display='block';
   try{
     const r=await fetch('/api/update/download',{method:'POST'});
     const d=await r.json();
-    if(!r.ok){alert('Hata: '+(d.error||''));return;}
-    alert('Güncelleme hazır! Uygulama kapatılıp update.bat çalıştırın:\n'+d.bat);
-  }catch(e){alert('Hata: '+e.message);}
+    if(!r.ok){alert('Hata: '+(d.error||''));resetUpdateUI();return;}
+    // Progress takibi
+    _updateInterval=setInterval(async()=>{
+      try{
+        const p=await(await fetch('/api/update/progress')).json();
+        document.getElementById('upd-fill').style.width=p.pct+'%';
+        document.getElementById('upd-pct').textContent='%'+p.pct+' indiriliyor...';
+        document.getElementById('update-msg').textContent='⬇️ Güncelleme indiriliyor — %'+p.pct;
+        if(p.status==='done'){
+          clearInterval(_updateInterval);
+          document.getElementById('upd-pct').textContent='✅ İndirme tamamlandı!';
+          document.getElementById('upd-warn').style.display='none';
+          document.getElementById('update-msg').textContent='✅ Güncelleme hazır!';
+          document.getElementById('upd-fill').style.background='var(--gr)';
+          document.getElementById('update-btn').textContent='🔄 Yeniden Başlat';
+          document.getElementById('update-btn').disabled=false;
+          document.getElementById('update-btn').onclick=()=>{
+            alert('Uygulama kapanacak. update.bat dosyasını çalıştırın:\n'+p.bat);
+          };
+        } else if(p.status==='error'){
+          clearInterval(_updateInterval);
+          alert('İndirme hatası: '+p.error);
+          resetUpdateUI();
+        }
+      }catch(e){}
+    },1000);
+  }catch(e){alert('Hata: '+e.message);resetUpdateUI();}
+}
+function resetUpdateUI(){
+  document.getElementById('update-btn').disabled=false;
+  document.getElementById('update-btn').textContent='⬇️ Güncelle';
+  document.getElementById('upd-progress').style.display='none';
+  document.getElementById('upd-warn').style.display='none';
+  document.getElementById('upd-pct').style.display='none';
+  if(_updateInterval)clearInterval(_updateInterval);
 }
 
 function selDb(k){
