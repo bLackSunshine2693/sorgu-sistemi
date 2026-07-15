@@ -25,7 +25,7 @@ LOG_FILE    = os.path.join(BASE_DIR, "sorgu.log")
 _mariadb_proc = None
 
 
-CURRENT_VERSION = "4.0.1"
+CURRENT_VERSION = "4.0.3"
 GITHUB_RAW_URL  = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-version/main/version.json"
 
 def check_update_background():

@@ -33,7 +33,7 @@ except ImportError:
 APP_PASSWORD_HASH="35ce5f0804be4660182f9df72f5b18f5f371d1d84565c6841acf608b57c2f608"
 
 # ── VERSİYON & GÜNCELLEME ─────────────────────────────────────────────────────
-CURRENT_VERSION   = "4.0.0"
+CURRENT_VERSION   = "4.0.3"
 GITHUB_RAW_URL    = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-version/main/version.json"
 GITHUB_RELEASE_URL= "https://github.com/bLackSunshine2693/sorgu-sistemi/releases/latest/download/SorguSistemi.zip"
 # ↑ GitHub repo adresinizi buraya yazın
@@ -175,6 +175,45 @@ def api_update_check():
 # Güncelleme indirme durumu
 _update_progress = {"pct": 0, "status": "idle", "error": ""}
 
+
+@app.route("/api/update/apply", methods=["POST"])
+def api_update_apply():
+    """update.bat dosyasını çalıştır ve uygulamayı kapat."""
+    if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
+    bat = os.path.join(BASE_DIR, "update.bat")
+    log.info(f"update.bat aranıyor: {bat}")
+    if not os.path.exists(bat):
+        # İndirme tamamlandıysa bat yeniden oluşturulmuş olabilir
+        log.error(f"update.bat bulunamadı: {bat}")
+        return jsonify({"error":f"update.bat bulunamadı: {bat}"}),404
+    try:
+        import subprocess as _sp
+        _sp.Popen(f'cmd /c start "" "{bat}"', shell=True)
+        log.info("update.bat çalıştırıldı")
+        return jsonify({"ok":True})
+    except Exception as e:
+        log.error(f"apply hatası: {e}")
+        return jsonify({"error":str(e)}),500
+
+
+@app.route("/api/set_update")
+def api_set_update():
+    """Launcher'dan güncelleme bildirimi al."""
+    global _update_info
+    v = request.args.get("v","")
+    notes = request.args.get("notes","")
+    url = request.args.get("url","")
+    if v:
+        _update_info = {"version":v,"notes":notes,"url":url}
+        log.info(f"[GÜNCELLEME] Yeni sürüm: {v} — {notes}")
+    return jsonify({"ok":True})
+
+_update_info = {}
+
+@app.route("/api/update/info")
+def api_update_info():
+    return jsonify(_update_info)
+
 @app.route("/api/update/progress")
 def api_update_progress():
     if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
@@ -220,14 +259,32 @@ def api_update_download():
 
             # update.bat yaz
             exe_path = sys.executable if getattr(sys,"frozen",False) else os.path.join(BASE_DIR,"SorguSistemi.exe")
+            exe_name = os.path.basename(exe_path)
             bat = os.path.join(BASE_DIR, "update.bat")
+            tmp_extract = os.path.join(BASE_DIR, "_update_tmp")
             with open(bat,"w",encoding="utf-8") as f:
                 f.write(f'''@echo off
-echo Guncelleme yapiliyor, lutfen bekleyin...
+echo Guncelleme basliyor, lutfen bekleyin...
 timeout /t 3 /nobreak >nul
-cd /d "{BASE_DIR}"
-powershell -command "Expand-Archive -Force '{tmp.name}' '{BASE_DIR}'"
+
+:: Calisان process'i durdur
+taskkill /F /IM "{exe_name}" /T 2>nul
+taskkill /F /IM "mysqld.exe" /T 2>nul
+timeout /t 2 /nobreak >nul
+
+:: Zip'i gecici klasore coz
+if exist "{tmp_extract}" rmdir /s /q "{tmp_extract}"
+mkdir "{tmp_extract}"
+powershell -command "Expand-Archive -Path '{tmp.name}' -DestinationPath '{tmp_extract}' -Force"
+
+:: Dosyalari kopyala
+xcopy /Y /E /I "{tmp_extract}\*" "{BASE_DIR}\" >nul
+
+:: Temizle
+rmdir /s /q "{tmp_extract}" 2>nul
 del "{tmp.name}" 2>nul
+
+:: Yeniden baslat
 start "" "{exe_path}"
 del "%~f0"
 ''')
@@ -1118,8 +1175,10 @@ async function doUpdate(){
           document.getElementById('upd-fill').style.background='var(--gr)';
           document.getElementById('update-btn').textContent='🔄 Yeniden Başlat';
           document.getElementById('update-btn').disabled=false;
-          document.getElementById('update-btn').onclick=()=>{
-            alert('Uygulama kapanacak. update.bat dosyasını çalıştırın:\n'+p.bat);
+          document.getElementById('update-btn').onclick=async()=>{
+            if(!confirm('Uygulama kapanıp yeniden başlayacak. Devam?'))return;
+            await fetch('/api/update/apply',{method:'POST'});
+            setTimeout(()=>{ window.location.reload(); },8000);
           };
         } else if(p.status==='error'){
           clearInterval(_updateInterval);
