@@ -137,6 +137,7 @@ def api_create_device(cid):
     cur.execute("SELECT COUNT(*) FROM licenses WHERE customer_id=? AND active=1",[cid]);used=cur.fetchone()[0]
     if used>=cust["quota"]:conn.close();return jsonify({"error":f"Kota dolu! ({used}/{cust['quota']})"}),400
     machine_id=d.get("machine_id","").strip()
+    admin_mod=bool(d.get("admin_mod",False))
     usb_serial=d.get("usb_serial","").strip()
     start_date=d.get("start_date",datetime.date.today().isoformat())
     end_date=d.get("end_date","")
@@ -151,7 +152,7 @@ def api_create_device(cid):
     lic_id=next_lic_id()
     lic_bytes=create_license(machine_id=machine_id,plan=plan,days=days,
         branch=cust.get("branch",""),issued_to=cust["name"],
-        license_id=lic_id,usb_serial=usb_serial)
+        license_id=lic_id,usb_serial=usb_serial,admin_mod=admin_mod)
     conn.execute("INSERT INTO licenses(license_id,customer_id,machine_id,usb_serial,plan,start_date,end_date,license_file,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
         [lic_id,cid,machine_id,usb_serial,plan,start_date,end_date,lic_bytes.decode("ascii"),datetime.datetime.now().isoformat()])
     conn.commit();conn.close()
@@ -257,7 +258,7 @@ ADMIN_HTML = r"""
         <!-- ÜST İSTATİSTİK KARTLARI -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
             <div class="bg-[#111a2e] border border-slate-800/80 rounded-lg p-6 text-center shadow-lg">
-                <div class="text-3xl font-bold text-blue-500 mb-1">3</div>
+                <div id="statTotal" class="text-3xl font-bold text-blue-500 mb-1">—</div>
                 <div class="text-xs text-slate-400 uppercase tracking-wider">Toplam Lisans</div>
             </div>
             <div class="bg-[#111a2e] border border-slate-800/80 rounded-lg p-6 text-center shadow-lg">
@@ -434,7 +435,13 @@ ADMIN_HTML = r"""
                     </div>
                 </div>
 
-                <button onclick="generateDeviceLicense()" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2 rounded transition flex items-center justify-center gap-1.5 shadow-md">
+                <div class="flex items-center gap-2 bg-[#0b111e] border border-amber-600/30 rounded p-2">
+                <input type="checkbox" id="chkAdminMod" class="w-3.5 h-3.5 accent-amber-500">
+                <label for="chkAdminMod" class="text-[11px] text-amber-400 font-semibold cursor-pointer">
+                    ⭐ Toplu GSM Sorgu Yetkisi (Admin Mod)
+                </label>
+            </div>
+            <button onclick="generateDeviceLicense()" class="w-full bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold py-2 rounded transition flex items-center justify-center gap-1.5 shadow-md">
                     <i class="fa-solid fa-wand-magic-sparkles"></i> Cihazı Kaydet ve Lisans Oluştur
                 </button>
             </div>
@@ -694,7 +701,7 @@ ADMIN_HTML = r"""
             if(activeLicenseType==='USB'&&!usbId){alert('USB SERİ NO alanı boş bırakılamaz!');return;}
             const r=await fetch(`/api/customers/${currentCid}/licenses`,{method:'POST',
                 headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({machine_id:macId,usb_serial:activeLicenseType==='USB'?usbId:'',start_date:start,end_date:end})});
+                body:JSON.stringify({machine_id:macId,usb_serial:activeLicenseType==='USB'?usbId:'',start_date:start,end_date:end,admin_mod:document.getElementById('chkAdminMod').checked})});
             const d=await r.json();
             if(!r.ok){alert(d.error||'Hata');return;}
             _licTxt=d.license_file;_licId=d.license_id;

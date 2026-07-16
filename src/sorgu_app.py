@@ -1,4 +1,4 @@
-"""Ofis Sorgu Sistemi v4.0"""
+"""Ofis Sorgu Sistemi v4.0.4"""
 import os,sys,hashlib,logging,socket,threading,webbrowser,datetime
 from flask import Flask,request,jsonify,session
 
@@ -24,7 +24,7 @@ try:
             r=tk.Tk();r.withdraw();mb.showerror("Lisans Hatası",f"{_msg}\n\nYöneticinizle iletişime geçin.");r.destroy()
         except: print(f"[HATA] {_msg}")
         sys.exit(1)
-    _PLAN=_lic.get("plan","?");_BRANCH=_lic.get("branch","");_ENDDATE=_lic.get("end_date","")
+    _PLAN=_lic.get("plan","?");_BRANCH=_lic.get("branch","");_ENDDATE=_lic.get("end_date","");_ADMIN_MOD=_lic.get("admin_mod",False)
 except ImportError:
     log.warning("sorgu_license.py bulunamadı — geliştirme modu")
     _PLAN="DEV";_BRANCH="";_ENDDATE=""
@@ -33,7 +33,7 @@ except ImportError:
 APP_PASSWORD_HASH="35ce5f0804be4660182f9df72f5b18f5f371d1d84565c6841acf608b57c2f608"
 
 # ── VERSİYON & GÜNCELLEME ─────────────────────────────────────────────────────
-CURRENT_VERSION   = "4.0.3"
+CURRENT_VERSION   = "4.0.4"
 GITHUB_RAW_URL    = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-version/main/version.json"
 GITHUB_RELEASE_URL= "https://github.com/bLackSunshine2693/sorgu-sistemi/releases/latest/download/SorguSistemi.zip"
 # ↑ GitHub repo adresinizi buraya yazın
@@ -84,10 +84,11 @@ DB_CONFIG={
                   {"key":"tc2calisanlar","label":"Aynı İşyerindekiler"},
               ]},
     "toplu": {"label":"Toplu GSM Sorgu","icon":"📋","color":"#e879f9",
-              "virtual":True,"multi_modal":True,
+              "virtual":True,"multi_modal":True,"admin_only":True,
               "modes":[
-                  {"key":"bizzat","label":"Bizzat GSM"},
-                  {"key":"aile",  "label":"Toplu Aile GSM"},
+                  {"key":"bizzat",   "label":"Bizzat GSM"},
+                  {"key":"aile",     "label":"Toplu Aile GSM"},
+                  {"key":"aile2",    "label":"Toplu Aile GSM (2. Derece)"},
               ]},
 }
 
@@ -312,7 +313,7 @@ def api_config():
                   "virtual":v.get("virtual",False),"mod":v.get("mod",""),
                   "multi_modal":v.get("multi_modal",False),"modes":v.get("modes",[])}
                for k,v in DB_CONFIG.items()],
-        "license":{"plan":_PLAN,"branch":_BRANCH,"end_date":_ENDDATE,"kalan":kalan},
+        "license":{"plan":_PLAN,"branch":_BRANCH,"end_date":_ENDDATE,"kalan":kalan,"admin_mod":_ADMIN_MOD},
     })
 
 @app.route("/api/query",methods=["POST"])
@@ -622,7 +623,7 @@ def api_toplu_gsm_preview():
     mode=d.get("mode","bizzat")
     tc_list=[str(t).strip() for t in d.get("tc_list",[]) if str(t).strip()]
     if not tc_list: return jsonify({"error":"TC listesi boş"}),400
-    if len(tc_list)>500: return jsonify({"error":"En fazla 500 TC"}),400
+    # TC limiti yok
 
     if mode=="bizzat":
         rows=[];cols=["TC","AD SOYAD","GSM"]
@@ -635,42 +636,129 @@ def api_toplu_gsm_preview():
                 for gsm in gsm_list: rows.append({"TC":tc,"AD SOYAD":name,"GSM":gsm})
         return jsonify({"ok":True,"rows":rows,"columns":cols,"count":len(tc_list)})
 
-    else:  # aile
-        cols=["Sorgulanan TC","Yakınlık","Ad Soyad","TC","Doğum","Ölüm","İl","Cinsiyet","Medeni","GSM"]
+    elif mode=="aile":  # aile - hızlı mod: sadece 1. derece aile
+        cols=["Sorgulanan TC","Yakınlık","Ad Soyad","TC","GSM"]
         rows=[]
         for i,tc in enumerate(tc_list):
             log.info(f"  [toplu/preview] TC={tc} ({i+1}/{len(tc_list)})")
-            aile=build_aile(tc)
-            if not aile.get("kisi"): continue
-            kisi=aile["kisi"];d1=aile.get("derece1",{});d2=aile.get("derece2",{});es=aile.get("es_tarafi",{})
+            try:
+                # Kişiyi al
+                c=get_conn("tc");cur=c.cursor(dictionary=True)
+                cur.execute("SELECT * FROM tcpro WHERE TC=%s LIMIT 1",[tc])
+                kisi=cur.fetchone()
+                if not kisi: cur.close();c.close();continue
+                kisi=clean_row(kisi)
 
-            def add(p,yak):
-                if not p: return
-                gsm_list=p.get("__gsm",[])
-                rows.append({"Sorgulanan TC":tc,"Yakınlık":yak,
-                    "Ad Soyad":f"{p.get('AD','')} {p.get('SOYAD','')}".strip(),
-                    "TC":p.get("TC",""),"Doğum":p.get("DOGUMTARIHI",""),
-                    "Ölüm":p.get("OLUMTARIHI","") or "YOK",
-                    "İl":p.get("MEMLEKETIL",""),"Cinsiyet":p.get("CINSIYET",""),
-                    "Medeni":p.get("MEDENIHAL",""),
-                    "GSM":", ".join(gsm_list) if gsm_list else "—",
-                    "__sep":False})
+                # 1. derece sorgu (tek query)
+                baba_tc=kisi.get("BABATC","");anne_tc=kisi.get("ANNETC","")
+                aile_rows=[]
 
-            add(kisi,"bizzat")
-            add(d1.get("baba"),"Baba");add(d1.get("anne"),"Anne")
-            for k in d1.get("kardesler",[]): add(k,"Kardeş")
-            for c in d1.get("cocuklar",[]): add(c,"Çocuk")
-            for et in es.values():
-                add(et.get("es"),"Eş");add(et.get("kayin_baba"),"Kayınpeder");add(et.get("kayin_anne"),"Kayınvalide")
-            for key,lbl in [("baba_baba","Dede(B)"),("baba_anne","Nine(B)"),("anne_baba","Dede(A)"),("anne_anne","Nine(A)")]:
-                add(d2.get(key),lbl)
-            for a in d2.get("amca_hala",[]): add(a,"Amca/Hala")
-            for a in d2.get("dayi_teyze",[]): add(a,"Dayı/Teyze")
-            if i<len(tc_list)-1: rows.append({"__sep":True})
+                # Bizzat
+                gsm=fetch_gsm(tc)
+                ad=f"{kisi.get('AD','')} {kisi.get('SOYAD','')}".strip()
+                aile_rows.append({"Sorgulanan TC":tc,"Yakınlık":"bizzat","Ad Soyad":ad,"TC":tc,"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+
+                # Baba
+                if baba_tc:
+                    cur.execute("SELECT * FROM tcpro WHERE TC=%s LIMIT 1",[baba_tc])
+                    b=cur.fetchone()
+                    if b:
+                        b=clean_row(b);gsm=fetch_gsm(baba_tc)
+                        ad=f"{b.get('AD','')} {b.get('SOYAD','')}".strip()
+                        aile_rows.append({"Sorgulanan TC":tc,"Yakınlık":"Baba","Ad Soyad":ad,"TC":baba_tc,"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+
+                # Anne
+                if anne_tc:
+                    cur.execute("SELECT * FROM tcpro WHERE TC=%s LIMIT 1",[anne_tc])
+                    a=cur.fetchone()
+                    if a:
+                        a=clean_row(a);gsm=fetch_gsm(anne_tc)
+                        ad=f"{a.get('AD','')} {a.get('SOYAD','')}".strip()
+                        aile_rows.append({"Sorgulanan TC":tc,"Yakınlık":"Anne","Ad Soyad":ad,"TC":anne_tc,"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+
+                # Kardeşler (baba TC üzerinden)
+                if baba_tc:
+                    cur.execute("SELECT TC,AD,SOYAD FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 20",[baba_tc,tc])
+                    for k in cur.fetchall():
+                        k=clean_row(k);gsm=fetch_gsm(k["TC"])
+                        ad=f"{k.get('AD','')} {k.get('SOYAD','')}".strip()
+                        aile_rows.append({"Sorgulanan TC":tc,"Yakınlık":"Kardeş","Ad Soyad":ad,"TC":k["TC"],"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+
+                # Çocuklar
+                cur.execute("SELECT TC,AD,SOYAD FROM tcpro WHERE BABATC=%s OR ANNETC=%s LIMIT 20",[tc,tc])
+                for c2 in cur.fetchall():
+                    c2=clean_row(c2);gsm=fetch_gsm(c2["TC"])
+                    ad=f"{c2.get('AD','')} {c2.get('SOYAD','')}".strip()
+                    aile_rows.append({"Sorgulanan TC":tc,"Yakınlık":"Çocuk","Ad Soyad":ad,"TC":c2["TC"],"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+
+                cur.close();c.close()
+                rows.extend(aile_rows)
+                if i<len(tc_list)-1: rows.append({"__sep":True})
+            except Exception as e:
+                log.error(f"[toplu/aile] TC={tc} hata: {e}")
+                continue
 
         return jsonify({"ok":True,"rows":rows,"columns":cols,"count":len(tc_list)})
 
-@app.route("/api/toplu_gsm_excel", methods=["POST"])
+    elif mode=="aile2":  # Sadece 2. derece
+        cols=["Sorgulanan TC","Yakınlık","Ad Soyad","TC","GSM"]
+        rows=[]
+        for i,tc in enumerate(tc_list):
+            log.info(f"  [toplu/aile2] TC={tc} ({i+1}/{len(tc_list)})")
+            try:
+                c=get_conn("tc");cur=c.cursor(dictionary=True)
+                cur.execute("SELECT * FROM tcpro WHERE TC=%s LIMIT 1",[tc])
+                kisi=cur.fetchone()
+                if not kisi: cur.close();c.close();continue
+                kisi=clean_row(kisi)
+                baba_tc=kisi.get("BABATC","");anne_tc=kisi.get("ANNETC","")
+
+                def add2(tc2,yak):
+                    if not tc2: return None
+                    cur.execute("SELECT TC,AD,SOYAD,BABATC,ANNETC FROM tcpro WHERE TC=%s LIMIT 1",[tc2])
+                    p=cur.fetchone()
+                    if not p: return None
+                    p=clean_row(p);gsm=fetch_gsm(tc2)
+                    ad=f"{p.get('AD','')} {p.get('SOYAD','')}".strip()
+                    rows.append({"Sorgulanan TC":tc,"Yakınlık":yak,"Ad Soyad":ad,"TC":tc2,"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+                    return p
+
+                # Bizzat
+                gsm=fetch_gsm(tc)
+                ad=f"{kisi.get('AD','')} {kisi.get('SOYAD','')}".strip()
+                rows.append({"Sorgulanan TC":tc,"Yakınlık":"bizzat","Ad Soyad":ad,"TC":tc,"GSM":", ".join(gsm) if gsm else "—","__sep":False})
+
+                # Baba/Anne bilgileri (listeye ekleme, 2. derece için kullan)
+                baba=None;anne=None
+                if baba_tc:
+                    cur.execute("SELECT TC,AD,SOYAD,BABATC,ANNETC FROM tcpro WHERE TC=%s LIMIT 1",[baba_tc])
+                    r=cur.fetchone()
+                    if r: baba=clean_row(r)
+                if anne_tc:
+                    cur.execute("SELECT TC,AD,SOYAD,BABATC,ANNETC FROM tcpro WHERE TC=%s LIMIT 1",[anne_tc])
+                    r=cur.fetchone()
+                    if r: anne=clean_row(r)
+
+                # Sadece 2. derece
+                if baba:
+                    add2(baba.get("BABATC",""),"Dede (B)")
+                    add2(baba.get("ANNETC",""),"Nine (B)")
+                    if baba.get("BABATC",""):
+                        cur.execute("SELECT TC FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 15",[baba["BABATC"],baba_tc])
+                        for a in cur.fetchall(): add2(a["TC"],"Amca/Hala")
+                if anne:
+                    add2(anne.get("BABATC",""),"Dede (A)")
+                    add2(anne.get("ANNETC",""),"Nine (A)")
+                    if anne.get("BABATC",""):
+                        cur.execute("SELECT TC FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 15",[anne["BABATC"],anne_tc])
+                        for a in cur.fetchall(): add2(a["TC"],"Dayı/Teyze")
+
+                cur.close();c.close()
+                if i<len(tc_list)-1: rows.append({"__sep":True})
+            except Exception as e:
+                log.error(f"[toplu/aile2] TC={tc} hata: {e}"); continue
+
+        return jsonify({"ok":True,"rows":rows,"columns":cols,"count":len(tc_list)})
 def api_toplu_gsm_excel():
     """Toplu TC listesinden GSM Excel dosyası üretir."""
     if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
@@ -725,7 +813,7 @@ def api_toplu_gsm_excel():
             ws.column_dimensions["C"].width = 14
 
         else:  # aile
-            NCOLS = 13
+            NCOLS = 8
             hdr_row(["Sorgulanan TC","Yakınlık","Ad Soyad","TC",
                      "Doğum","Ölüm","İl","Cinsiyet","Medeni",
                      "GSM","GSM","GSM","GSM"])
@@ -778,7 +866,7 @@ def api_toplu_gsm_excel():
                     sep_row(NCOLS)
 
             # Kolon genişlikleri
-            widths = [14,12,22,14,11,11,12,10,12,13,13,13,13]
+            widths = [14,12,22,14,14,14,14,14]
             for i,w in enumerate(widths,1):
                 ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -965,7 +1053,7 @@ tr:hover td{background:var(--glow-ac)}
 <div id="app">
   <div class="sidebar">
     <div class="sb-header">
-      <div class="sb-logo"><div class="sb-logo-icon">🗂</div><div><div>Sorgu Sistemi</div><div class="sb-sub">v4.0</div></div></div>
+      <div class="sb-logo"><div class="sb-logo-icon">🗂</div><div><div>Sorgu Sistemi</div><div class="sb-sub">v4.0.4</div></div></div>
     </div>
     <div class="sb-nav" id="sb-nav"><div class="sb-sec">Sorgular</div></div>
     <div class="sb-lic" id="sb-lic" style="display:none">
@@ -1044,6 +1132,7 @@ tr:hover td{background:var(--glow-ac)}
           <button class="btn-s" id="toplu-btn" onclick="topluSorgula()" style="margin-left:8px">🔍 Sorgula & İndir</button>
           <button class="btn-c" onclick="topluTemizle()">✕ Temizle</button>
         </div>
+        <div id="toplu-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);border-radius:7px;font-size:.78rem;color:var(--yw)">⚠️ 2. derece sorgu daha uzun sürebilir.</div>
         <div id="toplu-tc-preview" style="margin-top:6px;font-size:.76rem;color:var(--t3);font-family:monospace"></div>
       </div>
 
@@ -1061,7 +1150,7 @@ tr:hover td{background:var(--glow-ac)}
 </div>
 
 <script>
-let cfg={},adb=null,amode=null,lastRows=[],lastCols=[];
+let cfg={},adb=null,amode=null,lastRows=[],lastCols=[],_adminMod=false;
 let isDark=true;
 
 document.getElementById('pwd').onkeydown=e=>{if(e.key==='Enter')doLogin()};
@@ -1112,6 +1201,9 @@ async function loadCfg(){
     el.onclick=()=>selDb(k);
     nav.appendChild(el);
   }); // end dbsList.forEach
+  // Admin mod global
+  _adminMod = res.license?.admin_mod || false;
+
   // Lisans
   const lic=res.license;
   if(lic){
@@ -1199,24 +1291,28 @@ function resetUpdateUI(){
 }
 
 function selDb(k){
-  // Toplu GSM kilitli
+  // Toplu GSM - admin_mod kontrolü
   if(k==='toplu'){
     document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.key===k));
     document.getElementById('main-title').textContent='📋 Toplu GSM Sorgu';
-    document.getElementById('sf').classList.remove('show');
-    document.getElementById('rc').style.display='block';
-    document.getElementById('rb').textContent='Kilitli';
-    document.getElementById('rb').className='badge-no';
-    document.getElementById('rc-badge').style.display='none';
-    document.getElementById('excel-btn').style.display='none';
-    document.getElementById('rb2').innerHTML=`
-      <div style="padding:48px;text-align:center">
-        <div style="font-size:2.5rem;margin-bottom:12px">🔒</div>
-        <div style="font-size:1rem;font-weight:700;color:var(--t1);margin-bottom:8px">Bu sorgulama ücretlidir.</div>
-        <div style="font-size:.85rem;color:var(--t2)">Yönetici ile iletişime geçin.</div>
-      </div>`;
     hideErr();hideInfo();
-    return;
+    if(!_adminMod){
+      // Kilitli
+      document.getElementById('sf').classList.remove('show');
+      document.getElementById('rc').style.display='block';
+      document.getElementById('rb').textContent='Kilitli';
+      document.getElementById('rb').className='badge-no';
+      document.getElementById('rc-badge').style.display='none';
+      document.getElementById('excel-btn').style.display='none';
+      document.getElementById('rb2').innerHTML=`
+        <div style="padding:48px;text-align:center">
+          <div style="font-size:2.5rem;margin-bottom:12px">🔒</div>
+          <div style="font-size:1rem;font-weight:700;color:var(--t1);margin-bottom:8px">Bu sorgulama ücretlidir.</div>
+          <div style="font-size:.85rem;color:var(--t2)">Yönetici ile iletişime geçin.</div>
+        </div>`;
+      return;
+    }
+    // Admin mod - normal selDb akışına devam et
   }
   adb=k;amode=null;
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.key===k));
@@ -1281,6 +1377,12 @@ function setupModeForm(dbKey,modeKey){
     document.getElementById('toplu-area').style.display='block';
     document.querySelector('.btn-s').onclick=topluSorgula;
     document.querySelector('.btn-s').textContent='🔍 Sorgula & İndir';
+    // 2. derece uyarısı
+    if(modeKey==='aile2'){
+      document.getElementById('toplu-warn').style.display='block';
+    } else {
+      document.getElementById('toplu-warn').style.display='none';
+    }
     // Dosya sıfırla
     topluTcList=[];
     document.getElementById('toplu-file-info').textContent='Dosya seçilmedi';
@@ -1712,6 +1814,6 @@ if __name__=="__main__":
             return s.connect_ex(("localhost",p))!=0
     if not pf(5001): webbrowser.open("http://localhost:5001")
     else:
-        log.info("Sorgu Sistemi v4.0 → http://localhost:5001")
+        log.info("Sorgu Sistemi v4.0.4 → http://localhost:5001")
         threading.Timer(1.5,lambda:webbrowser.open("http://localhost:5001")).start()
         app.run(host="127.0.0.1",port=5001,debug=False,threaded=True,use_reloader=False)

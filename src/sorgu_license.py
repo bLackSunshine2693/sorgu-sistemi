@@ -12,7 +12,7 @@ except ImportError:
     _CRYPTO = False
 
 MASTER_SECRET   = b"SorguSistemi_Master_2024_xK9mP3qR7nT"
-ADMIN_PASS_HASH = hashlib.sha256("admin_sorgu_2024".encode()).hexdigest()
+ADMIN_PASS_HASH = "e5f9ff3d72242dad7b5caf552c872c1520479d954c1867e5b775a6df4882e664"
 LICENSE_FILE    = "license.lic"
 
 def _wmic(query):
@@ -75,7 +75,7 @@ def decrypt_license(blob, machine_id):
     except:
         return None
 
-def create_license(machine_id, plan, days, branch, issued_to, license_id, usb_serial=""):
+def create_license(machine_id, plan, days, branch, issued_to, license_id, usb_serial="", admin_mod=False):
     today = datetime.date.today()
     data  = {
         "license_id": license_id, "machine_id": machine_id,
@@ -84,6 +84,7 @@ def create_license(machine_id, plan, days, branch, issued_to, license_id, usb_se
         "start_date": today.isoformat(),
         "end_date":   (today + datetime.timedelta(days=int(days))).isoformat() if days else "SINIRSIZ",
         "created_at": datetime.datetime.now().isoformat(),
+        "admin_mod":  admin_mod,
     }
     return encrypt_license(data, machine_id)
 
