@@ -1,6 +1,7 @@
+sorgu-version repo → version.json → Edit:
 {
-  "version": "4.0.3",
-  "notes": "EFS sifrelemesi eklendi",
-  "date": "2026-07-15",
-  "download_url": "https://github.com/bLackSunshine2693/sorgu-sistemi/releases/download/v4.0.3/SorguSistemi.zip"
+  "version": "4.0.4",
+  "notes": "Hatalar düzeltildi, genel sistem güncellemesi yapıldı.",
+  "date": "2026-07-16",
+  "download_url": "https://github.com/bLackSunshine2693/sorgu-sistemi/releases/download/v4.0.4/SorguSistemi.zip"
 }
