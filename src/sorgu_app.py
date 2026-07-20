@@ -638,7 +638,7 @@ def api_aile():
                 add_gsm(bt);buyuk_torun.extend(bt)
             result["buyuk_torun"]=buyuk_torun
 
-        # Derece 4+: Kuzenler, B. Amca/dayı/hala/teyze, Büyük yeğen
+        # Derece 4+: Kuzenler, Büyük amca/dayı/hala/teyze, Büyük yeğen
         if degree>=4:
             kuzenler=[]
             d2=result.get("derece2",{})
@@ -650,16 +650,16 @@ def api_aile():
                 cur2.close();c2.close()
                 add_gsm(k);kuzenler.extend(k)
             result["kuzenler"]=kuzenler
-            # B. Amca/hala/dayı/teyze (dede/nine'nin kardeşleri)
+            # Büyük amca/hala/dayı/teyze (dede/nine'nin kardeşleri)
             buyuk_amca=[]
-            # baba_baba → B. Amca(E)/B. Hala(K)
-            # baba_anne → B. Amca(E)/B. Hala(K)
-            # anne_baba → B. Dayı(E)/B. Teyze(K)
-            # anne_anne → B. Dayı(E)/B. Teyze(K)
-            taraf_map={"baba_baba":("B. Amca","B. Hala"),
-                       "baba_anne":("B. Amca","B. Hala"),
-                       "anne_baba":("B. Dayı","B. Teyze"),
-                       "anne_anne":("B. Dayı","B. Teyze")}
+            # baba_baba → Büyük Amca(E)/Büyük Hala(K)
+            # baba_anne → Büyük Amca(E)/Büyük Hala(K)
+            # anne_baba → Büyük Dayı(E)/Büyük Teyze(K)
+            # anne_anne → Büyük Dayı(E)/Büyük Teyze(K)
+            taraf_map={"baba_baba":("Büyük Amca","Büyük Hala"),
+                       "baba_anne":("Büyük Amca","Büyük Hala"),
+                       "anne_baba":("Büyük Dayı","Büyük Teyze"),
+                       "anne_anne":("Büyük Dayı","Büyük Teyze")}
             for dede_key,lbl_pair in taraf_map.items():
                 dede=d2.get(dede_key)
                 if not dede: continue
@@ -1780,15 +1780,17 @@ function kisiRow(p,rol,cls=''){
   if(!p)return'';
   const ad=`${p.AD||''} ${p.SOYAD||''}`.trim()||'—';
   const tc=p.TC||'',dog=p.DOGUMTARIHI||'—';
+  const olum=p.OLUMTARIHI&&p.OLUMTARIHI!=='0000-00-00'?p.OLUMTARIHI:'—';
+  const medeni=p.MEDENIHAL||'—';
   const il=p.MEMLEKETIL||p.ADRESIL||'—';
   const gsm=(p.__gsm||[]).map(g=>`<div>${g}</div>`).join('')||'—';
   const gsmTxt=(p.__gsm||[]).join(', ')||'—';
-  lastRows.push({'Yakınlık':rol,'Ad Soyad':ad,'TC':tc,'Doğum':dog,'İl':il,'GSM':gsmTxt});
+  lastRows.push({'Yakınlık':rol,'Ad Soyad':ad,'TC':tc,'Doğum':dog,'Ölüm':olum,'Medeni':medeni,'İl':il,'GSM':gsmTxt});
   return`<tr class="aile-row ${cls?'ar-'+cls:''}">
     <td><span class="rol-b">${rol}</span></td>
     <td>${ad}</td>
     <td><span style="font-family:monospace;font-size:.75rem">${tc}</span></td>
-    <td>${dog}</td><td>${il}</td>
+    <td>${dog}</td><td>${olum}</td><td>${medeni}</td><td>${il}</td>
     <td class="gsm-cell">${gsm}</td>
     <td><button class="tree-btn" onclick="araAile('${tc}')">Ağaç →</button></td>
   </tr>`;
@@ -1797,7 +1799,7 @@ function secRow(b,s){if(!s.trim())return'';return`<tr class="aile-sec"><td colsp
 
 function renderAile(d,tc){
   lastRows=[];
-  lastCols=['Yakınlık','Ad Soyad','TC','Doğum','İl','GSM'];
+  lastCols=['Yakınlık','Ad Soyad','TC','Doğum','Ölüm','Medeni','İl','GSM'];
   const deg=d.degree||1;
   const {kisi,derece1,derece2,derece3,es_tarafi}=d;
   const torunlar=d.torunlar||[];
@@ -1806,7 +1808,7 @@ function renderAile(d,tc){
   const kuzenler=d.kuzenler||[];
   const buyuk_amca=d.buyuk_amca||[];
   const buyuk_yegen=d.buyuk_yegen||[];
-  const thead=`<thead><tr><th>Yakınlık</th><th>Ad Soyad</th><th>TC</th><th>Doğum</th><th>İl</th><th>GSM</th><th></th></tr></thead>`;
+  const thead=`<thead><tr><th>Yakınlık</th><th>Ad Soyad</th><th>TC</th><th>Doğum</th><th>Ölüm</th><th>Medeni</th><th>İl</th><th>GSM</th><th></th></tr></thead>`;
   let tb='';
   // Her zaman: Bizzat (★)
   tb+=secRow('⭐ Sorgulanan Kişi',kisiRow(kisi,'★ Bizzat','merkez'));
@@ -1833,9 +1835,9 @@ function renderAile(d,tc){
   } else if(deg===4){
     let d4H='';
     kuzenler.forEach(k=>d4H+=kisiRow(k,'Kuzen'));
-    buyuk_amca.forEach(b=>d4H+=kisiRow(b,b.__rol||'B. Amca/Dayı/Hala/Teyze'));
+    buyuk_amca.forEach(b=>d4H+=kisiRow(b,b.__rol||'Büyük Amca/Dayı/Hala/Teyze'));
     buyuk_yegen.forEach(b=>d4H+=kisiRow(b,'Büyük Yeğen'));
-    if(d4H)tb+=secRow('4️⃣ 4. Derece — Kuzenler / B. Amca & Teyze / Büyük Yeğen',d4H);
+    if(d4H)tb+=secRow('4️⃣ 4. Derece — Kuzenler / Büyük Amca & Teyze / Büyük Yeğen',d4H);
   }
 
   // Eş tarafı (her zaman göster)
