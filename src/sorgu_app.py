@@ -364,11 +364,19 @@ def api_query():
             if v: where.append(f'`{f["key"]}` LIKE %s');params.append(f"{v}%")
         # Multi alanları da ekle (tcpro için AD, SOYAD vs)
         multi_fields={"AD":"AD","SOYAD":"SOYAD","BABAADI":"BABAADI","ANNEADI":"ANNEADI"}
+        multi_count=0
         for key,col in multi_fields.items():
             mv=str(multi.get(key,"")).strip()
-            if mv: where.append(f'`{col}` LIKE %s');params.append(f"{mv}%")
+            if mv:
+                where.append(f'`{col}` LIKE %s');params.append(f"{mv}%")
+                multi_count+=1
         if not where:
             return jsonify({"error":"Arama kriteri giriniz"}),400
+        # TC yoksa yavaş sorgu — en az 2 kriter zorunlu ve LIMIT 1000
+        has_tc_where = any("TC" in w for w in where)
+        if not has_tc_where and (multi_count+len(extra_filters))<2:
+            return jsonify({"error":"TC girilmeden arama yapmak için en az 2 kriter doldurun (Ad+Soyad, Ad+İl gibi)"}),400
+        extra_filters=[v for f in cfg.get("filters",[]) if (v:=extra.get(f["key"],"").strip())]
         cols=", ".join(f'`{col}`' for col in cfg["columns"])
         sql=f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 50000'
         log.info(f"  [{db_key}] TC={tc}")
@@ -1418,6 +1426,10 @@ function resetUpdateUI(){
 }
 
 function selDb(k){
+  // Derece butonlarını gizle (aile dışında)
+  const degBar=document.getElementById('aile-degree-bar');
+  if(degBar) degBar.style.display=(k==='aile')?'flex':'none';
+
   // Toplu GSM - admin_mod kontrolü
   if(k==='toplu'){
     document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.key===k));
@@ -1616,10 +1628,6 @@ async function doSearch(){
     await fetchAndRender('/api/sgk_query',{mode:amode,tc},'sgk');
     return;
   }
-  // Aile derece bar
-  document.getElementById('aile-degree-bar').style.display=(adb==='aile')?'flex':'none';
-  if(adb!=='aile'){document.getElementById('aile-degree').value='1';document.querySelectorAll('.deg-btn').forEach(b=>{b.classList.toggle('active',b.textContent.startsWith('1'))});}
-
   if(adb==='komsular'){
     if(!tc||tc.length!==11){showErr('11 haneli TC giriniz');return;}
     showLoading();
@@ -1774,34 +1782,29 @@ function renderAile(d,tc){
   const buyuk_yegen=d.buyuk_yegen||[];
   const thead=`<thead><tr><th>Yakınlık</th><th>Ad Soyad</th><th>TC</th><th>Doğum</th><th>İl</th><th>GSM</th><th></th></tr></thead>`;
   let tb='';
-  // Bizzat + 1. derece (her zaman)
-  tb+=secRow('🎯 Aranan Kişi',kisiRow(kisi,'Kişi','merkez'));
-  let d1H=kisiRow(derece1.baba,'Baba','baba')+kisiRow(derece1.anne,'Anne','anne');
-  derece1.cocuklar.forEach(c=>d1H+=kisiRow(c,'Çocuk'));
-  if(d1H)tb+=secRow('1️⃣ 1. Derece — Anne / Baba / Çocuklar',d1H);
+  // Her zaman: Bizzat (★)
+  tb+=secRow('⭐ Sorgulanan Kişi',kisiRow(kisi,'★ Bizzat','merkez'));
 
-  // 2. derece
-  if(deg>=2){
+  // Sadece seçilen derece
+  if(deg===1){
+    let d1H=kisiRow(derece1.baba,'Baba','baba')+kisiRow(derece1.anne,'Anne','anne');
+    derece1.cocuklar.forEach(c=>d1H+=kisiRow(c,'Çocuk'));
+    if(d1H)tb+=secRow('1️⃣ 1. Derece — Anne / Baba / Çocuklar',d1H);
+  } else if(deg===2){
     let d2H='';
     derece1.kardesler.forEach(k=>d2H+=kisiRow(k,'Kardeş'));
     d2H+=kisiRow(derece2.baba_baba,'Büyükbaba (B)')+kisiRow(derece2.baba_anne,'Büyükanne (B)');
     d2H+=kisiRow(derece2.anne_baba,'Büyükbaba (A)')+kisiRow(derece2.anne_anne,'Büyükanne (A)');
     torunlar.forEach(t=>d2H+=kisiRow(t,'Torun'));
     if(d2H)tb+=secRow('2️⃣ 2. Derece — Kardeşler / Büyükanne & Büyükbaba / Torunlar',d2H);
-  }
-
-  // 3. derece
-  if(deg>=3){
+  } else if(deg===3){
     let d3H='';
     derece2.amca_hala.forEach(a=>d3H+=kisiRow(a,'Amca/Hala'));
     derece2.dayi_teyze.forEach(a=>d3H+=kisiRow(a,'Dayı/Teyze'));
     yegenler.forEach(y=>d3H+=kisiRow(y,'Yeğen'));
     buyuk_torun.forEach(b=>d3H+=kisiRow(b,'Büyük Torun'));
     if(d3H)tb+=secRow('3️⃣ 3. Derece — Amca / Dayı / Hala / Teyze / Yeğen / Büyük Torun',d3H);
-  }
-
-  // 4. derece
-  if(deg>=4){
+  } else if(deg===4){
     let d4H='';
     kuzenler.forEach(k=>d4H+=kisiRow(k,'Kuzen'));
     buyuk_amca.forEach(b=>d4H+=kisiRow(b,'Büyük Amca/Dayı/Hala/Teyze'));
@@ -1809,8 +1812,8 @@ function renderAile(d,tc){
     if(d4H)tb+=secRow('4️⃣ 4. Derece — Kuzenler / Büyük Amca & Teyze / Büyük Yeğen',d4H);
   }
 
-  // Eş tarafı
-  if(es_tarafi&&Object.keys(es_tarafi).length){
+  // Eş tarafı (her zaman göster)
+  if(deg===1&&es_tarafi&&Object.keys(es_tarafi).length){
     let esT='';
     Object.values(es_tarafi).forEach((et,i)=>{
       const s=Object.keys(es_tarafi).length>1?` ${i+1}`:'';
