@@ -1,4 +1,4 @@
-"""Ofis Sorgu Sistemi v4.0.4"""
+"""Ofis Sorgu Sistemi v4.0"""
 import os,sys,hashlib,logging,socket,threading,webbrowser,datetime
 from flask import Flask,request,jsonify,session
 
@@ -52,10 +52,14 @@ app.config['JSON_SORT_KEYS']=False
 DB_CONFIG={
     "tcpro": {"label":"Ad Soyad Sorgusu","icon":"👤","color":"#8b5cf6",
               "db":"tc","table":"tcpro","tc_col":"TC",
-              "columns":["TC","AD","SOYAD","BABAADI","ANNEADI","BABATC","ANNETC",
-                         "DOGUMTARIHI","OLUMTARIHI","DOGUMYERI","MEMLEKETIL",
-                         "MEMLEKETILCE","MEMLEKETKOY","ADRESIL","ADRESILCE","MEDENIHAL","CINSIYET"],
-              "filters":[],"multi_search":True,"virtual":False},
+              "columns":["TC","AD","SOYAD","BABAADI","ANNEADI",
+                         "DOGUMTARIHI","DOGUMYERI","MEMLEKETIL",
+                         "MEMLEKETILCE","MEMLEKETKOY","ADRESIL","ADRESILCE"],
+              "filters":[
+                  {"key":"ADRESIL","label":"Adres İl","type":"text"},
+                  {"key":"ADRESILCE","label":"Adres İlçe","type":"text"},
+              ],
+              "multi_search":True,"virtual":False},
     "gsm":   {"label":"GSM Bilgisi","icon":"📱","color":"#10b981",
               "virtual":True,"multi_modal":True,
               "modes":[
@@ -327,16 +331,46 @@ def api_query():
     cfg=DB_CONFIG[db_key]
     if cfg.get("multi_search") and not tc:
         return api_query_multi(cfg,multi)
-    if not tc or len(tc)!=11 or not tc.isdigit():
-        return jsonify({"error":"11 haneli TC giriniz"}),400
+    # TC: tam (11 hane) veya kısmi (prefix) arama
+    if tc:
+        tc_clean = tc.replace(" ","").replace("-","")
+        if not tc_clean.isdigit():
+            return jsonify({"error":"TC sadece rakam içerebilir"}),400
+        tc = tc_clean
+    if not tc and not (cfg.get("multi_search") and any(multi.values())):
+        return jsonify({"error":"TC veya arama kriteri giriniz"}),400
     try:
         c=get_conn(cfg["db"]);cur=c.cursor(dictionary=True)
-        where=[f'`{cfg["tc_col"]}` = %s'];params=[tc]
+        where=[];params=[]
+        tc_son = d.get("tc_son","").strip()
+        if tc:
+            if len(tc)==11:
+                where.append(f'`{cfg["tc_col"]}` = %s');params.append(tc)
+            elif tc_son and len(tc_son)==2:
+                # İlk X hane + son 2 hane pattern
+                pattern = f"{tc}________{tc_son}"[:11]
+                # Doldur: başlangıç + wildcard + son 2
+                wildcards = 11 - len(tc) - len(tc_son)
+                if wildcards >= 0:
+                    pattern = f"{tc}{'_'*wildcards}{tc_son}"
+                    where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(pattern)
+                else:
+                    where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(f"{tc}%")
+            else:
+                # Sadece prefix
+                where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(f"{tc}%")
         for f in cfg.get("filters",[]):
             v=extra.get(f["key"],"").strip()
-            if v: where.append(f'`{f["key"]}` LIKE %s');params.append(f"%{v}%")
+            if v: where.append(f'`{f["key"]}` LIKE %s');params.append(f"{v}%")
+        # Multi alanları da ekle (tcpro için AD, SOYAD vs)
+        multi_fields={"AD":"AD","SOYAD":"SOYAD","BABAADI":"BABAADI","ANNEADI":"ANNEADI"}
+        for key,col in multi_fields.items():
+            mv=str(multi.get(key,"")).strip()
+            if mv: where.append(f'`{col}` LIKE %s');params.append(f"{mv}%")
+        if not where:
+            return jsonify({"error":"Arama kriteri giriniz"}),400
         cols=", ".join(f'`{col}`' for col in cfg["columns"])
-        sql=f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 500'
+        sql=f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 50000'
         log.info(f"  [{db_key}] TC={tc}")
         cur.execute(sql,params)
         rows=[clean_row(r) for r in cur.fetchall()]
@@ -435,7 +469,7 @@ def api_tapu_query():
                                "`BagimsizBolumNo`","`ArsaPay`","`ArsaPayda`",
                                "`BagimsizBolumNitelik`","`IstirakNo`",
                                "`HissePay`","`HissePayda`","`EdinmeSebebi`","`TapuDate`","`Yevmiye`"])
-            cur.execute(f"SELECT {cols_sql} FROM venom_tapu WHERE `Identify`=%s LIMIT 200",[tc])
+            cur.execute(f"SELECT {cols_sql} FROM venom_tapu WHERE `Identify`=%s LIMIT 5000",[tc])
             rows=[clean_row(r) for r in cur.fetchall()]
             cols_out=list(rows[0].keys()) if rows else []
         elif mode=="parsel2kisi":
@@ -448,7 +482,7 @@ def api_tapu_query():
             if parsel: where.append("`ParselBilgisi`=%s");params.append(parsel)
             if not where: return jsonify({"error":"En az bir kriter giriniz"}),400
             c=get_conn("tapu");cur=c.cursor(dictionary=True)
-            cur.execute(f"SELECT `Identify`,`Name`,`Surname`,`BabaAdi`,`İlBilgisi`,`İlceBilgisi`,`MahalleBilgisi`,`AdaBilgisi`,`ParselBilgisi`,`HissePay`,`HissePayda`,`TapuDate` FROM venom_tapu WHERE {' AND '.join(where)} LIMIT 200",params)
+            cur.execute(f"SELECT `Identify`,`Name`,`Surname`,`BabaAdi`,`İlBilgisi`,`İlceBilgisi`,`MahalleBilgisi`,`AdaBilgisi`,`ParselBilgisi`,`HissePay`,`HissePayda`,`TapuDate` FROM venom_tapu WHERE {' AND '.join(where)} LIMIT 5000",params)
             rows=[clean_row(r) for r in cur.fetchall()]
             # GSM ekle
             for r in rows:
@@ -482,7 +516,7 @@ def api_sgk_query():
             isyeri=cur.fetchone()
             if not isyeri: return jsonify({"ok":True,"rows":[],"columns":[],"count":0,"info":"Bu TC için işyeri kaydı bulunamadı"})
             sicil=isyeri["isyeriSgkSicilNo"];unvan=isyeri["isyeriUnvani"]
-            cur.execute("SELECT calisanKimlikNo,calisanAdSoyad,calismaDurumu,iseGirisTarihi FROM theos WHERE isyeriSgkSicilNo=%s LIMIT 200",[sicil])
+            cur.execute("SELECT calisanKimlikNo,calisanAdSoyad,calismaDurumu,iseGirisTarihi FROM theos WHERE isyeriSgkSicilNo=%s LIMIT 5000",[sicil])
             rows=[clean_row(r) for r in cur.fetchall()]
             # GSM ekle
             for r in rows:
@@ -512,7 +546,7 @@ def api_komsular():
             cur.close();c.close()
             return jsonify({"error":"Bu TC için adres kaydı bulunamadı"}),404
         adres=row["Ikametgah"]
-        cur.execute("SELECT KimlikNo,AdSoyad,Ikametgah FROM datam WHERE Ikametgah=%s AND KimlikNo!=%s LIMIT 200",[adres,tc])
+        cur.execute("SELECT KimlikNo,AdSoyad,Ikametgah FROM datam WHERE Ikametgah=%s AND KimlikNo!=%s LIMIT 5000",[adres,tc])
         komsu_rows=cur.fetchall();cur.close();c.close()
         rows=[]
         for r in komsu_rows:
@@ -551,9 +585,83 @@ def api_aile():
     if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
     d=request.get_json(force=True) or {}
     tc=d.get("tc","").strip().replace(" ","")
+    degree=int(d.get("degree",1))
     if not tc or len(tc)!=11 or not tc.isdigit():
         return jsonify({"error":"11 haneli TC giriniz"}),400
-    try: return jsonify({"ok":True,**build_aile(tc)})
+    try:
+        result=build_aile(tc)
+        # Derece 2+: Torunlar
+        if degree>=2:
+            torunlar=[]
+            for cocuk in result.get("derece1",{}).get("cocuklar",[]):
+                c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
+                cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s OR ANNETC=%s LIMIT 20",
+                    [cocuk.get("TC",""),cocuk.get("TC","")])
+                t=[clean_row(r) for r in cur2.fetchall()]
+                cur2.close();c2.close()
+                add_gsm(t);torunlar.extend(t)
+            result["torunlar"]=torunlar
+
+        # Derece 3+: Yeğenler, Büyük torun
+        if degree>=3:
+            yegenler=[]
+            for kard in result.get("derece1",{}).get("kardesler",[]):
+                c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
+                cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s OR ANNETC=%s LIMIT 20",
+                    [kard.get("TC",""),kard.get("TC","")])
+                y=[clean_row(r) for r in cur2.fetchall()]
+                cur2.close();c2.close()
+                add_gsm(y);yegenler.extend(y)
+            result["yegenler"]=yegenler
+            # Büyük torun (torunların çocukları)
+            buyuk_torun=[]
+            for tor in result.get("torunlar",[]):
+                c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
+                cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s OR ANNETC=%s LIMIT 10",
+                    [tor.get("TC",""),tor.get("TC","")])
+                bt=[clean_row(r) for r in cur2.fetchall()]
+                cur2.close();c2.close()
+                add_gsm(bt);buyuk_torun.extend(bt)
+            result["buyuk_torun"]=buyuk_torun
+
+        # Derece 4+: Kuzenler, Büyük amca/dayı/hala/teyze, Büyük yeğen
+        if degree>=4:
+            kuzenler=[]
+            d2=result.get("derece2",{})
+            for rel in list(d2.get("amca_hala",[]))+list(d2.get("dayi_teyze",[])):
+                c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
+                cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s OR ANNETC=%s LIMIT 20",
+                    [rel.get("TC",""),rel.get("TC","")])
+                k=[clean_row(r) for r in cur2.fetchall()]
+                cur2.close();c2.close()
+                add_gsm(k);kuzenler.extend(k)
+            result["kuzenler"]=kuzenler
+            # Büyük amca/dayı/hala/teyze (dede/nine'nin kardeşleri)
+            buyuk_amca=[]
+            for dede_key in ["baba_baba","baba_anne","anne_baba","anne_anne"]:
+                dede=d2.get(dede_key)
+                if not dede: continue
+                c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
+                baba_tc2=dede.get("BABATC","")
+                if baba_tc2:
+                    cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 15",
+                        [baba_tc2,dede.get("TC","")])
+                    ba=[clean_row(r) for r in cur2.fetchall()]
+                    cur2.close();c2.close()
+                    add_gsm(ba);buyuk_amca.extend(ba)
+            result["buyuk_amca"]=buyuk_amca
+            # Büyük yeğen (yeğenlerin çocukları)
+            buyuk_yegen=[]
+            for yeg in result.get("yegenler",[]):
+                c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
+                cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s OR ANNETC=%s LIMIT 10",
+                    [yeg.get("TC",""),yeg.get("TC","")])
+                by=[clean_row(r) for r in cur2.fetchall()]
+                cur2.close();c2.close()
+                add_gsm(by);buyuk_yegen.extend(by)
+            result["buyuk_yegen"]=buyuk_yegen
+
+        return jsonify({"ok":True,"degree":degree,**result})
     except Exception as e: log.error(f"[aile] {e}");return jsonify({"error":str(e)}),500
 
 def build_aile(tc):
@@ -759,6 +867,8 @@ def api_toplu_gsm_preview():
                 log.error(f"[toplu/aile2] TC={tc} hata: {e}"); continue
 
         return jsonify({"ok":True,"rows":rows,"columns":cols,"count":len(tc_list)})
+
+@app.route("/api/toplu_gsm_excel", methods=["POST"])
 def api_toplu_gsm_excel():
     """Toplu TC listesinden GSM Excel dosyası üretir."""
     if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
@@ -766,7 +876,6 @@ def api_toplu_gsm_excel():
     mode = d.get("mode","bizzat")
     tc_list = [str(t).strip() for t in d.get("tc_list",[]) if str(t).strip()]
     if not tc_list: return jsonify({"error":"TC listesi boş"}),400
-    if len(tc_list) > 500: return jsonify({"error":"En fazla 500 TC"}),400
 
     try:
         import openpyxl
@@ -812,7 +921,7 @@ def api_toplu_gsm_excel():
             ws.column_dimensions["B"].width = 22
             ws.column_dimensions["C"].width = 14
 
-        else:  # aile
+        elif mode in ("aile","aile2"):  # 1. ve 2. derece aile
             NCOLS = 8
             hdr_row(["Sorgulanan TC","Yakınlık","Ad Soyad","TC",
                      "Doğum","Ölüm","İl","Cinsiyet","Medeni",
@@ -998,10 +1107,10 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);height:100vh;o
 .badge-no{padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;background:var(--s3);color:var(--t3);border:1px solid var(--b1)}
 .btn-excel{padding:5px 12px;background:rgba(0,229,160,.12);border:1px solid rgba(0,229,160,.2);color:var(--gr);border-radius:6px;cursor:pointer;font-size:.72rem;font-weight:600;font-family:var(--font)}
 .btn-excel:hover{background:rgba(0,229,160,.2)}
-.tw{overflow-x:auto;max-height:calc(100vh - 260px);white-space:nowrap}
+.tw{overflow-x:auto;max-height:calc(100vh - 260px)}
 table{width:100%;border-collapse:collapse;font-size:.8rem}
 th{position:sticky;top:0;padding:9px 12px;text-align:left;font-size:.67rem;font-weight:700;color:var(--t2);background:var(--s2);border-bottom:1px solid var(--b1);white-space:nowrap;text-transform:uppercase;letter-spacing:.07em;z-index:1}
-td{padding:8px 12px;border-bottom:1px solid var(--b1);color:var(--t1);white-space:nowrap;max-width:200px;overflow:hidden;text-overflow:ellipsis}
+td{padding:8px 12px;border-bottom:1px solid var(--b1);color:var(--t1);white-space:nowrap}
 tr:last-child td{border-bottom:none}
 tr:hover td{background:var(--glow-ac)}
 .es{padding:36px;text-align:center;color:var(--t3);font-size:.85rem}
@@ -1017,9 +1126,12 @@ tr:hover td{background:var(--glow-ac)}
 .aile-tw th:nth-child(5){width:80px}.aile-tw th:nth-child(6){width:80px}
 .aile-tw th:nth-child(7){width:65px}.aile-tw th:nth-child(8){width:65px}
 .aile-tw th:nth-child(9){min-width:110px}.aile-tw th:nth-child(10){width:75px}
-.aile-tw td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0;padding:7px 10px;font-size:.78rem}
+.aile-tw td{white-space:nowrap;padding:7px 10px;font-size:.78rem}
 .aile-tw td:nth-child(9){white-space:normal;word-break:break-all}
 .rol-b{display:inline-block;padding:2px 8px;border-radius:5px;font-size:.67rem;font-weight:700;background:var(--s3);color:var(--t2);border:1px solid var(--b1)}
+.deg-btn{padding:6px 14px;border-radius:7px;border:1.5px solid var(--b1);background:var(--s2);color:var(--t2);cursor:pointer;font-size:.78rem;font-weight:600;font-family:var(--font);transition:all .15s}
+.deg-btn:hover{border-color:var(--b2);color:var(--t1)}
+.deg-btn.active{border-color:var(--ac);background:var(--glow-ac);color:var(--ac)}
 .ar-merkez td{background:rgba(79,158,255,.07)!important}
 .ar-merkez .rol-b{background:rgba(79,158,255,.15);color:var(--ac);border-color:rgba(79,158,255,.2)}
 .ar-baba .rol-b{background:rgba(34,211,238,.1);color:var(--cy);border-color:rgba(34,211,238,.2)}
@@ -1053,7 +1165,7 @@ tr:hover td{background:var(--glow-ac)}
 <div id="app">
   <div class="sidebar">
     <div class="sb-header">
-      <div class="sb-logo"><div class="sb-logo-icon">🗂</div><div><div>Sorgu Sistemi</div><div class="sb-sub">v4.0.4</div></div></div>
+      <div class="sb-logo"><div class="sb-logo-icon">🗂</div><div><div>Sorgu Sistemi</div><div class="sb-sub">v4.0</div></div></div>
     </div>
     <div class="sb-nav" id="sb-nav"><div class="sb-sec">Sorgular</div></div>
     <div class="sb-lic" id="sb-lic" style="display:none">
@@ -1102,11 +1214,26 @@ tr:hover td{background:var(--glow-ac)}
             <label id="sf-label">TC Kimlik No</label>
             <input class="tc-f" type="text" id="tc" placeholder="00000000000" maxlength="11" oninput="this.value=this.value.replace(/[^0-9]/g,'')">
           </div>
+          <div class="fd" id="tc-son-wrap" style="display:none">
+            <label>TC Son 2 Hane</label>
+            <input type="text" id="tc-son" placeholder="örn: 60" maxlength="2" style="width:80px"
+              oninput="this.value=this.value.replace(/[^0-9]/g,'')">
+          </div>
           <div id="extra-fields" style="display:flex;gap:8px;flex-wrap:wrap"></div>
           <button class="btn-s" onclick="doSearch()">🔍 Ara</button>
           <button class="btn-c" onclick="doClear()">✕</button>
         </div>
-        <!-- Çoklu alan (tcpro) -->
+        <!-- Aile derece seçimi -->
+      <div id="aile-degree-bar" style="display:none;gap:6px;flex-wrap:wrap;margin-top:8px">
+        <span style="font-size:.72rem;color:var(--t2);font-weight:600;align-self:center">Derece:</span>
+        <button class="deg-btn active" onclick="setAileDegree(1,this)">1. Derece</button>
+        <button class="deg-btn" onclick="setAileDegree(2,this)">2. Derece</button>
+        <button class="deg-btn" onclick="setAileDegree(3,this)">3. Derece</button>
+        <button class="deg-btn" onclick="setAileDegree(4,this)">4. Derece</button>
+        <input type="hidden" id="aile-degree" value="1">
+      </div>
+
+      <!-- Çoklu alan (tcpro) -->
         <div id="multi-area" style="display:none">
           <div class="multi-div">veya isim / bilgi ile ara</div>
           <div class="multi-row">
@@ -1132,7 +1259,7 @@ tr:hover td{background:var(--glow-ac)}
           <button class="btn-s" id="toplu-btn" onclick="topluSorgula()" style="margin-left:8px">🔍 Sorgula & İndir</button>
           <button class="btn-c" onclick="topluTemizle()">✕ Temizle</button>
         </div>
-        <div id="toplu-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);border-radius:7px;font-size:.78rem;color:var(--yw)">⚠️ 2. derece sorgu daha uzun sürebilir.</div>
+        <div id="toplu-warn" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(255,209,102,.08);border:1px solid rgba(255,209,102,.3);border-radius:7px;font-size:.78rem;color:var(--yw)">⚠️ 2. derece sorgu daha uzun sürebilir. Büyük TC listeleri için sabırla bekleyin.</div>
         <div id="toplu-tc-preview" style="margin-top:6px;font-size:.76rem;color:var(--t3);font-family:monospace"></div>
       </div>
 
@@ -1353,13 +1480,34 @@ function selMode(dbKey,modeKey,btn){
 
 function setupDefaultForm(k){
   const tc=document.getElementById('tc');
-  tc.placeholder='00000000000';tc.type='text';tc.maxLength=11;
+  tc.type='text';
   tc.oninput=function(){this.value=this.value.replace(/[^0-9]/g,'')};
+  if(k==='tcpro'){
+    tc.placeholder='TC (tam 11 hane veya ilk 3-9 hane)';
+    tc.maxLength=11;
+    tc.removeAttribute('required');
+    document.getElementById('tc-son-wrap').style.display='block';
+  } else {
+    document.getElementById('tc-son-wrap').style.display='none';
+    document.getElementById('tc-son').value='';
+    tc.placeholder='00000000000';
+    tc.maxLength=11;
+  }
   document.getElementById('sf-label').textContent='TC Kimlik No';
-  document.getElementById('extra-fields').innerHTML='';
+  // Filtre alanları
+  const v=cfg[k];
+  const ef=document.getElementById('extra-fields');
+  ef.innerHTML='';
+  if(v&&v.filters&&v.filters.length&&k==='tcpro'){
+    v.filters.forEach(f=>{
+      const div=document.createElement('div');
+      div.className='fd';
+      div.innerHTML=`<label>${f.label}</label><input type="text" id="filter-${f.key}" placeholder="${f.label}..." style="min-width:110px">`;
+      ef.appendChild(div);
+    });
+  }
   document.getElementById('toplu-area').style.display='none';
   document.getElementById('sf-main-row').style.display='flex';
-  // multi-area: selDb zaten v.multi_search'e göre ayarlıyor, burada dokunma
   document.querySelector('.btn-s').onclick=doSearch;
   document.querySelector('.btn-s').textContent='🔍 Ara';
 }
@@ -1435,6 +1583,9 @@ async function doSearch(){
   hideErr();hideInfo();
   const tc=document.getElementById('tc').value.trim();
   const v=cfg[adb];
+  // Filtreler
+  const filters={};
+  if(v&&v.filters){v.filters.forEach(f=>{const el=document.getElementById('filter-'+f.key);if(el)filters[f.key]=el.value.trim();});}
 
   // Özel endpoint'ler
   if(adb==='gsm'&&amode){
@@ -1465,6 +1616,10 @@ async function doSearch(){
     await fetchAndRender('/api/sgk_query',{mode:amode,tc},'sgk');
     return;
   }
+  // Aile derece bar
+  document.getElementById('aile-degree-bar').style.display=(adb==='aile')?'flex':'none';
+  if(adb!=='aile'){document.getElementById('aile-degree').value='1';document.querySelectorAll('.deg-btn').forEach(b=>{b.classList.toggle('active',b.textContent.startsWith('1'))});}
+
   if(adb==='komsular'){
     if(!tc||tc.length!==11){showErr('11 haneli TC giriniz');return;}
     showLoading();
@@ -1479,9 +1634,10 @@ async function doSearch(){
   }
   if(adb==='aile'){
     if(!tc||tc.length!==11){showErr('11 haneli TC giriniz');return;}
+    const deg=parseInt(document.getElementById('aile-degree')?.value||'1');
     showLoading();
     try{
-      const r=await fetch('/api/aile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tc})});
+      const r=await fetch('/api/aile',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({tc,degree:deg})});
       const d=await r.json();
       if(!r.ok||!d.kisi){document.getElementById('rb2').innerHTML='<div class="es">Bu TC için kayıt bulunamadı.</div>';return;}
       renderAile(d,tc);
@@ -1494,12 +1650,14 @@ async function doSearch(){
     const el=document.getElementById('m-'+k);if(el)multi[k]=el.value.trim();
   });
   const hasMulti=Object.values(multi).some(v=>v);
-  if(!tc&&!hasMulti){showErr(v.multi_search?'TC veya en az bir kriter giriniz':'11 haneli TC giriniz');return;}
-  if(tc&&(tc.length!==11||!/^\d+$/.test(tc))){showErr('11 haneli TC giriniz');return;}
+  const hasFilter=Object.values(filters).some(v=>v);
+  if(!tc&&!hasMulti&&!hasFilter){showErr(v.multi_search?'TC veya en az bir kriter giriniz':'TC giriniz');return;}
+  if(tc&&!/^\d+$/.test(tc)){showErr('TC sadece rakam içerebilir');return;}
+  if(tc&&tc.length!==11&&adb!=='tcpro'){showErr('11 haneli TC giriniz');return;}
   showLoading();
   try{
     const r=await fetch('/api/query',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({db:adb,tc,filters:{},multi})});
+      body:JSON.stringify({db:adb,tc,tc_son:document.getElementById('tc-son')?.value.trim()||'',filters,multi})});
     let d;try{d=await r.json();}catch(e){showErr('Yanıt okunamadı');return;}
     if(!r.ok){showErr(d.error||`Hata (${r.status})`);document.getElementById('rc').style.display='none';return;}
     renderTable(d,tc||'çoklu arama');
@@ -1587,17 +1745,16 @@ function exportCSV(){
 function kisiRow(p,rol,cls=''){
   if(!p)return'';
   const ad=`${p.AD||''} ${p.SOYAD||''}`.trim()||'—';
-  const tc=p.TC||'',dog=p.DOGUMTARIHI||'—',olum=p.OLUMTARIHI||'—';
-  const il=p.MEMLEKETIL||p.ADRESIL||'—',cin=p.CINSIYET||'—',med=p.MEDENIHAL||'—';
+  const tc=p.TC||'',dog=p.DOGUMTARIHI||'—';
+  const il=p.MEMLEKETIL||p.ADRESIL||'—';
   const gsm=(p.__gsm||[]).map(g=>`<div>${g}</div>`).join('')||'—';
   const gsmTxt=(p.__gsm||[]).join(', ')||'—';
-  // Excel için topla
-  lastRows.push({'Yakınlık':rol,'Ad Soyad':ad,'TC':tc,'Doğum':dog,'Ölüm':olum,'İl':il,'Cinsiyet':cin,'Medeni':med,'GSM':gsmTxt});
+  lastRows.push({'Yakınlık':rol,'Ad Soyad':ad,'TC':tc,'Doğum':dog,'İl':il,'GSM':gsmTxt});
   return`<tr class="aile-row ${cls?'ar-'+cls:''}">
     <td><span class="rol-b">${rol}</span></td>
     <td>${ad}</td>
     <td><span style="font-family:monospace;font-size:.75rem">${tc}</span></td>
-    <td>${dog}</td><td>${olum}</td><td>${il}</td><td>${cin}</td><td>${med}</td>
+    <td>${dog}</td><td>${il}</td>
     <td class="gsm-cell">${gsm}</td>
     <td><button class="tree-btn" onclick="araAile('${tc}')">Ağaç →</button></td>
   </tr>`;
@@ -1605,44 +1762,64 @@ function kisiRow(p,rol,cls=''){
 function secRow(b,s){if(!s.trim())return'';return`<tr class="aile-sec"><td colspan="9">${b}</td></tr>${s}`;}
 
 function renderAile(d,tc){
-  lastRows=[];  // Excel için sıfırla
-  lastCols=['Yakınlık','Ad Soyad','TC','Doğum','Ölüm','İl','Cinsiyet','Medeni','GSM'];
+  lastRows=[];
+  lastCols=['Yakınlık','Ad Soyad','TC','Doğum','İl','GSM'];
+  const deg=d.degree||1;
   const {kisi,derece1,derece2,derece3,es_tarafi}=d;
-  const thead=`<thead><tr><th>Yakınlık</th><th>Ad Soyad</th><th>TC</th><th>Doğum</th><th>Ölüm</th><th>İl</th><th>Cinsiyet</th><th>Medeni</th><th>GSM</th><th></th></tr></thead>`;
+  const torunlar=d.torunlar||[];
+  const yegenler=d.yegenler||[];
+  const buyuk_torun=d.buyuk_torun||[];
+  const kuzenler=d.kuzenler||[];
+  const buyuk_amca=d.buyuk_amca||[];
+  const buyuk_yegen=d.buyuk_yegen||[];
+  const thead=`<thead><tr><th>Yakınlık</th><th>Ad Soyad</th><th>TC</th><th>Doğum</th><th>İl</th><th>GSM</th><th></th></tr></thead>`;
   let tb='';
+  // Bizzat + 1. derece (her zaman)
   tb+=secRow('🎯 Aranan Kişi',kisiRow(kisi,'Kişi','merkez'));
-  let eH='';
-  if(es_tarafi&&Object.keys(es_tarafi).length){
-    Object.values(es_tarafi).forEach((et,i)=>{
-      const s=Object.keys(es_tarafi).length>1?` ${i+1}`:'';
-      eH+=kisiRow(et.es,`Eş${s}`,'es');
-    });
+  let d1H=kisiRow(derece1.baba,'Baba','baba')+kisiRow(derece1.anne,'Anne','anne');
+  derece1.cocuklar.forEach(c=>d1H+=kisiRow(c,'Çocuk'));
+  if(d1H)tb+=secRow('1️⃣ 1. Derece — Anne / Baba / Çocuklar',d1H);
+
+  // 2. derece
+  if(deg>=2){
+    let d2H='';
+    derece1.kardesler.forEach(k=>d2H+=kisiRow(k,'Kardeş'));
+    d2H+=kisiRow(derece2.baba_baba,'Büyükbaba (B)')+kisiRow(derece2.baba_anne,'Büyükanne (B)');
+    d2H+=kisiRow(derece2.anne_baba,'Büyükbaba (A)')+kisiRow(derece2.anne_anne,'Büyükanne (A)');
+    torunlar.forEach(t=>d2H+=kisiRow(t,'Torun'));
+    if(d2H)tb+=secRow('2️⃣ 2. Derece — Kardeşler / Büyükanne & Büyükbaba / Torunlar',d2H);
   }
-  derece1.cocuklar.forEach(c=>eH+=kisiRow(c,'Çocuk'));
-  if(eH)tb+=secRow('💍 Eş ve Çocuklar',eH);
-  let d1=kisiRow(derece1.baba,'Baba','baba')+kisiRow(derece1.anne,'Anne','anne');
-  derece1.kardesler.forEach(k=>d1+=kisiRow(k,'Kardeş'));
-  if(d1)tb+=secRow('👨‍👩‍👧 Anne / Baba / Kardeşler',d1);
+
+  // 3. derece
+  if(deg>=3){
+    let d3H='';
+    derece2.amca_hala.forEach(a=>d3H+=kisiRow(a,'Amca/Hala'));
+    derece2.dayi_teyze.forEach(a=>d3H+=kisiRow(a,'Dayı/Teyze'));
+    yegenler.forEach(y=>d3H+=kisiRow(y,'Yeğen'));
+    buyuk_torun.forEach(b=>d3H+=kisiRow(b,'Büyük Torun'));
+    if(d3H)tb+=secRow('3️⃣ 3. Derece — Amca / Dayı / Hala / Teyze / Yeğen / Büyük Torun',d3H);
+  }
+
+  // 4. derece
+  if(deg>=4){
+    let d4H='';
+    kuzenler.forEach(k=>d4H+=kisiRow(k,'Kuzen'));
+    buyuk_amca.forEach(b=>d4H+=kisiRow(b,'Büyük Amca/Dayı/Hala/Teyze'));
+    buyuk_yegen.forEach(b=>d4H+=kisiRow(b,'Büyük Yeğen'));
+    if(d4H)tb+=secRow('4️⃣ 4. Derece — Kuzenler / Büyük Amca & Teyze / Büyük Yeğen',d4H);
+  }
+
+  // Eş tarafı
   if(es_tarafi&&Object.keys(es_tarafi).length){
     let esT='';
     Object.values(es_tarafi).forEach((et,i)=>{
       const s=Object.keys(es_tarafi).length>1?` ${i+1}`:'';
+      esT+=kisiRow(et.es,`Eş${s}`,'es');
       esT+=kisiRow(et.kayin_baba,`Kayınpeder${s}`)+kisiRow(et.kayin_anne,`Kayınvalide${s}`);
-      (et.es_kardesler||[]).forEach(k=>esT+=kisiRow(k,k.CINSIYET==='E'?'Kayınbirader':'Görümce/Baldız'));
-      esT+=kisiRow(et.kayin_dede_b,'Kaynın Dedesi (B)')+kisiRow(et.kayin_nine_b,'Kaynın Ninesi (B)');
-      esT+=kisiRow(et.kayin_dede_a,'Kaynın Dedesi (A)')+kisiRow(et.kayin_nine_a,'Kaynın Ninesi (A)');
+      (et.es_kardesler||[]).forEach(k=>esT+=kisiRow(k,'Kayın'));
     });
     if(esT)tb+=secRow('💍 Eş Tarafı',esT);
   }
-  let d2=kisiRow(derece2.baba_baba,'Dede (B)')+kisiRow(derece2.baba_anne,'Nine (B)')
-        +kisiRow(derece2.anne_baba,'Dede (A)')+kisiRow(derece2.anne_anne,'Nine (A)');
-  derece2.amca_hala.forEach(a=>d2+=kisiRow(a,'Amca/Hala'));
-  derece2.dayi_teyze.forEach(a=>d2+=kisiRow(a,'Dayı/Teyze'));
-  if(d2)tb+=secRow('👴👵 Dedeler / Nineler / Amca / Hala / Dayı / Teyze',d2);
-  const d3m={'bb_b':'B.Dede(BB)','bb_a':'B.Nine(BB)','ba_b':'B.Dede(BA)','ba_a':'B.Nine(BA)',
-             'ab_b':'B.Dede(AB)','ab_a':'B.Nine(AB)','aa_b':'B.Dede(AA)','aa_a':'B.Nine(AA)'};
-  let d3s='';Object.entries(derece3).forEach(([k,v])=>{if(v)d3s+=kisiRow(v,d3m[k]||k);});
-  if(d3s)tb+=secRow('🏺 Büyükdedeler / Büyüknineler',d3s);
   document.getElementById('rb').textContent='Aile ağacı';document.getElementById('rb').className='badge-ok';
   document.getElementById('excel-btn').style.display='block';
   document.getElementById('rt').textContent=`🧬 Bizzat ve Aile Sorgusu — TC: ${tc}`;
@@ -1653,6 +1830,7 @@ function renderAile(d,tc){
 function araAile(tc){if(!tc)return;selDb('aile');document.getElementById('tc').value=tc;doSearch();}
 function doClear(){
   document.getElementById('tc').value='';
+  const tcSon=document.getElementById('tc-son');if(tcSon)tcSon.value='';
   document.querySelectorAll('[id^="m-"],[id^="f-"]').forEach(e=>e.value='');
   document.getElementById('rc').style.display='none';
   document.getElementById('rc-badge').style.display='none';
@@ -1768,7 +1946,17 @@ async function topluExcelIndir(){
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({mode:amode,tc_list:topluTcList})
     });
-    if(!r.ok){const e=await r.json();showErr(e.error||'Hata');return;}
+    const ct=r.headers.get('Content-Type')||'';
+    if(!r.ok||ct.includes('text/html')){
+      // HTML hata sayfası geldi - otur hatayı text olarak oku
+      const txt=await r.text();
+      showErr('Sunucu hatası ('+r.status+'). Lütfen tekrar deneyin.');
+      console.error('Excel hata:', txt.substring(0,200));
+      return;
+    }
+    if(ct.includes('application/json')){
+      const e=await r.json();showErr(e.error||'Hata');return;
+    }
     const blob=await r.blob();
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
@@ -1780,6 +1968,12 @@ async function topluExcelIndir(){
   } finally {
     btn.textContent='⬇️ Excel İndir';btn.disabled=false;
   }
+}
+
+function setAileDegree(deg,btn){
+  document.getElementById('aile-degree').value=deg;
+  document.querySelectorAll('.deg-btn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
 }
 
 function topluTemizle(){
@@ -1814,6 +2008,6 @@ if __name__=="__main__":
             return s.connect_ex(("localhost",p))!=0
     if not pf(5001): webbrowser.open("http://localhost:5001")
     else:
-        log.info("Sorgu Sistemi v4.0.4 → http://localhost:5001")
+        log.info("Sorgu Sistemi v4.0 → http://localhost:5001")
         threading.Timer(1.5,lambda:webbrowser.open("http://localhost:5001")).start()
         app.run(host="127.0.0.1",port=5001,debug=False,threaded=True,use_reloader=False)
