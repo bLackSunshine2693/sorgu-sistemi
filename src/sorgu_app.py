@@ -329,8 +329,10 @@ def api_query():
     if db_key not in DB_CONFIG or DB_CONFIG[db_key].get("virtual"):
         return jsonify({"error":"Geçersiz DB"}),400
     cfg=DB_CONFIG[db_key]
-    if cfg.get("multi_search") and not tc:
-        return api_query_multi(cfg,multi)
+    tc_son = d.get("tc_son","").strip()
+    if cfg.get("multi_search") and not tc and not tc_son:
+        return api_query_multi(cfg,multi,extra)
+    # tc_son varsa veya tc varsa ana koda devam
     # TC: tam (11 hane) veya kısmi (prefix) arama
     if tc:
         tc_clean = tc.replace(" ","").replace("-","")
@@ -343,22 +345,21 @@ def api_query():
         c=get_conn(cfg["db"]);cur=c.cursor(dictionary=True)
         where=[];params=[]
         tc_son = d.get("tc_son","").strip()
-        if tc:
-            if len(tc)==11:
-                where.append(f'`{cfg["tc_col"]}` = %s');params.append(tc)
-            elif tc_son and len(tc_son)==2:
-                # İlk X hane + son 2 hane pattern
-                pattern = f"{tc}________{tc_son}"[:11]
-                # Doldur: başlangıç + wildcard + son 2
-                wildcards = 11 - len(tc) - len(tc_son)
-                if wildcards >= 0:
-                    pattern = f"{tc}{'_'*wildcards}{tc_son}"
-                    where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(pattern)
-                else:
-                    where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(f"{tc}%")
+        log.info(f"  [query] db={db_key} tc={repr(tc)} tc_son={repr(tc_son)}")
+        if tc and len(tc)==11:
+            where.append(f'`{cfg["tc_col"]}` = %s');params.append(tc)
+        elif tc and tc_son and len(tc_son)==2:
+            wildcards = 11 - len(tc) - len(tc_son)
+            if wildcards >= 0:
+                pattern = f"{tc}{'_'*wildcards}{tc_son}"
+                where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(pattern)
             else:
-                # Sadece prefix
                 where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(f"{tc}%")
+        elif tc:
+            where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(f"{tc}%")
+        elif tc_son and len(tc_son)==2:
+            # Son 2 hane — LIKE ile eşleşme
+            where.append(f'`{cfg["tc_col"]}` LIKE %s');params.append(f"%{tc_son}")
         for f in cfg.get("filters",[]):
             v=extra.get(f["key"],"").strip()
             if v: where.append(f'`{f["key"]}` LIKE %s');params.append(f"{v}%")
@@ -372,11 +373,8 @@ def api_query():
                 multi_count+=1
         if not where:
             return jsonify({"error":"Arama kriteri giriniz"}),400
-        # TC yoksa yavaş sorgu — en az 2 kriter zorunlu ve LIMIT 1000
-        has_tc_where = any("TC" in w for w in where)
-        if not has_tc_where and (multi_count+len(extra_filters))<2:
-            return jsonify({"error":"TC girilmeden arama yapmak için en az 2 kriter doldurun (Ad+Soyad, Ad+İl gibi)"}),400
-        extra_filters=[v for f in cfg.get("filters",[]) if (v:=extra.get(f["key"],"").strip())]
+        # Limit: TC varsa 5000, yoksa 1000
+        has_tc_where = any(cfg["tc_col"] in w for w in where)
         cols=", ".join(f'`{col}`' for col in cfg["columns"])
         sql=f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 50000'
         log.info(f"  [{db_key}] TC={tc}")
@@ -394,7 +392,7 @@ def api_query():
     except Exception as e:
         log.error(f"[{db_key}] {e}");return jsonify({"error":str(e)}),500
 
-def api_query_multi(cfg,multi):
+def api_query_multi(cfg,multi,extra={}):
     fields={"AD":"AD","SOYAD":"SOYAD","BABAADI":"BABAADI","ANNEADI":"ANNEADI",
             "DOGUMTARIHI":"DOGUMTARIHI","DOGUMYERI":"DOGUMYERI",
             "MEMLEKETIL":"MEMLEKETIL","MEMLEKETILCE":"MEMLEKETILCE"}
@@ -402,6 +400,10 @@ def api_query_multi(cfg,multi):
     for key,col in fields.items():
         v=str(multi.get(key,"")).strip()
         if v: where.append(f'`{col}` LIKE %s');params.append(f"{v}%")
+    # Filtreler (Adres İl/İlçe)
+    for f in cfg.get("filters",[]):
+        v=extra.get(f["key"],"").strip()
+        if v: where.append(f'`{f["key"]}` LIKE %s');params.append(f"{v}%")
     if not where: return jsonify({"error":"En az bir arama kriteri giriniz"}),400
     try:
         c=get_conn(cfg["db"]);cur=c.cursor(dictionary=True)
@@ -479,6 +481,10 @@ def api_tapu_query():
                                "`HissePay`","`HissePayda`","`EdinmeSebebi`","`TapuDate`","`Yevmiye`"])
             cur.execute(f"SELECT {cols_sql} FROM venom_tapu WHERE `Identify`=%s LIMIT 5000",[tc])
             rows=[clean_row(r) for r in cur.fetchall()]
+            # GSM ekle
+            gsm=fetch_gsm(tc)
+            gsm_str=", ".join(gsm) if gsm else "—"
+            for r in rows: r["GSM"]=gsm_str
             cols_out=list(rows[0].keys()) if rows else []
         elif mode=="parsel2kisi":
             il=d.get("il","").strip();ilce=d.get("ilce","").strip()
@@ -632,7 +638,7 @@ def api_aile():
                 add_gsm(bt);buyuk_torun.extend(bt)
             result["buyuk_torun"]=buyuk_torun
 
-        # Derece 4+: Kuzenler, Büyük amca/dayı/hala/teyze, Büyük yeğen
+        # Derece 4+: Kuzenler, B. Amca/dayı/hala/teyze, Büyük yeğen
         if degree>=4:
             kuzenler=[]
             d2=result.get("derece2",{})
@@ -644,9 +650,17 @@ def api_aile():
                 cur2.close();c2.close()
                 add_gsm(k);kuzenler.extend(k)
             result["kuzenler"]=kuzenler
-            # Büyük amca/dayı/hala/teyze (dede/nine'nin kardeşleri)
+            # B. Amca/hala/dayı/teyze (dede/nine'nin kardeşleri)
             buyuk_amca=[]
-            for dede_key in ["baba_baba","baba_anne","anne_baba","anne_anne"]:
+            # baba_baba → B. Amca(E)/B. Hala(K)
+            # baba_anne → B. Amca(E)/B. Hala(K)
+            # anne_baba → B. Dayı(E)/B. Teyze(K)
+            # anne_anne → B. Dayı(E)/B. Teyze(K)
+            taraf_map={"baba_baba":("B. Amca","B. Hala"),
+                       "baba_anne":("B. Amca","B. Hala"),
+                       "anne_baba":("B. Dayı","B. Teyze"),
+                       "anne_anne":("B. Dayı","B. Teyze")}
+            for dede_key,lbl_pair in taraf_map.items():
                 dede=d2.get(dede_key)
                 if not dede: continue
                 c2=get_conn("tc");cur2=c2.cursor(dictionary=True)
@@ -654,9 +668,13 @@ def api_aile():
                 if baba_tc2:
                     cur2.execute("SELECT * FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 15",
                         [baba_tc2,dede.get("TC","")])
-                    ba=[clean_row(r) for r in cur2.fetchall()]
-                    cur2.close();c2.close()
-                    add_gsm(ba);buyuk_amca.extend(ba)
+                    for r in cur2.fetchall():
+                        p=clean_row(r)
+                        cin=p.get("CINSIYET","")
+                        p["__rol"]=lbl_pair[0] if cin=="E" else lbl_pair[1] if cin=="K" else f"{lbl_pair[0]}/{lbl_pair[1]}"
+                        buyuk_amca.append(p)
+                cur2.close();c2.close()
+            add_gsm(buyuk_amca)
             result["buyuk_amca"]=buyuk_amca
             # Büyük yeğen (yeğenlerin çocukları)
             buyuk_yegen=[]
@@ -711,11 +729,17 @@ def build_aile(tc):
         c=get_conn("tc");cur=c.cursor(dictionary=True)
         cur.execute("SELECT * FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 20",[baba["BABATC"],baba_tc])
         ah=add_gsm([clean_row(r) for r in cur.fetchall()]);cur.close();c.close()
+        for p2 in ah:
+            cin=p2.get("CINSIYET","")
+            p2["__rol"]="Amca" if cin=="E" else "Hala" if cin=="K" else "Amca/Hala"
     dt=[]
     if anne and anne.get("BABATC"):
         c=get_conn("tc");cur=c.cursor(dictionary=True)
         cur.execute("SELECT * FROM tcpro WHERE BABATC=%s AND TC!=%s LIMIT 20",[anne["BABATC"],anne_tc])
         dt=add_gsm([clean_row(r) for r in cur.fetchall()]);cur.close();c.close()
+        for p2 in dt:
+            cin=p2.get("CINSIYET","")
+            p2["__rol"]="Dayı" if cin=="E" else "Teyze" if cin=="K" else "Dayı/Teyze"
     return {"kisi":p,
         "derece1":{"baba":baba,"anne":anne,"kardesler":kardesler,"cocuklar":cocuklar},
         "derece2":{"baba_baba":bb,"baba_anne":ba,"anne_baba":ab,"anne_anne":aa,"amca_hala":ah,"dayi_teyze":dt},
@@ -1108,7 +1132,7 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);height:100vh;o
 .em.show{display:block}
 
 /* RESULTS */
-.rc{background:var(--s1);border:1px solid var(--b1);border-radius:12px;overflow:hidden}
+.rc{background:var(--s1);border:1px solid var(--b1);border-radius:12px;overflow:hidden;width:100%;box-sizing:border-box}
 .rc-head{padding:11px 16px;border-bottom:1px solid var(--b1);display:flex;align-items:center;justify-content:space-between;gap:8px}
 .rc-title{font-size:.82rem;color:var(--t2);font-weight:500;flex:1}
 .badge-ok{padding:3px 10px;border-radius:20px;font-size:.72rem;font-weight:700;background:rgba(0,229,160,.12);color:var(--gr);border:1px solid rgba(0,229,160,.2)}
@@ -1127,16 +1151,13 @@ tr:hover td{background:var(--glow-ac)}
 @keyframes sp{to{transform:rotate(360deg)}}
 
 /* AİLE AĞACI */
-.aile-tw{overflow-x:hidden;max-height:calc(100vh - 260px);overflow-y:auto}
-.aile-tw table{width:100%;table-layout:fixed}
-.aile-tw th:nth-child(1){width:130px}.aile-tw th:nth-child(2){width:150px}
-.aile-tw th:nth-child(3){width:110px}.aile-tw th:nth-child(4){width:80px}
-.aile-tw th:nth-child(5){width:80px}.aile-tw th:nth-child(6){width:80px}
-.aile-tw th:nth-child(7){width:65px}.aile-tw th:nth-child(8){width:65px}
-.aile-tw th:nth-child(9){min-width:110px}.aile-tw th:nth-child(10){width:75px}
-.aile-tw td{white-space:nowrap;padding:7px 10px;font-size:.78rem}
+.aile-tw{overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px);width:100%}
+.aile-tw table{width:100%;table-layout:auto;border-collapse:collapse}
+.aile-tw th{padding:7px 10px;font-size:.78rem;font-family:var(--font);color:var(--t2);font-weight:600;background:var(--s2);border-bottom:1.5px solid var(--b1);white-space:nowrap;text-align:left}
+
+.aile-tw td{white-space:nowrap;padding:7px 10px;font-size:.82rem;font-family:var(--font);color:var(--t1)}
 .aile-tw td:nth-child(9){white-space:normal;word-break:break-all}
-.rol-b{display:inline-block;padding:2px 8px;border-radius:5px;font-size:.67rem;font-weight:700;background:var(--s3);color:var(--t2);border:1px solid var(--b1)}
+.rol-b{display:inline-block;padding:2px 8px;border-radius:5px;font-size:.72rem;font-weight:700;background:var(--s3);color:var(--t2);border:1px solid var(--b1);font-family:var(--font)}
 .deg-btn{padding:6px 14px;border-radius:7px;border:1.5px solid var(--b1);background:var(--s2);color:var(--t2);cursor:pointer;font-size:.78rem;font-weight:600;font-family:var(--font);transition:all .15s}
 .deg-btn:hover{border-color:var(--b2);color:var(--t1)}
 .deg-btn.active{border-color:var(--ac);background:var(--glow-ac);color:var(--ac)}
@@ -1429,6 +1450,11 @@ function selDb(k){
   // Derece butonlarını gizle (aile dışında)
   const degBar=document.getElementById('aile-degree-bar');
   if(degBar) degBar.style.display=(k==='aile')?'flex':'none';
+  // TC Son 2 Hane sadece tcpro'da görünsün
+  const tcSonWrap=document.getElementById('tc-son-wrap');
+  if(tcSonWrap){tcSonWrap.style.display=(k==='tcpro')?'flex':'none';}
+  const tcSon=document.getElementById('tc-son');
+  if(tcSon&&k!=='tcpro')tcSon.value='';
 
   // Toplu GSM - admin_mod kontrolü
   if(k==='toplu'){
@@ -1799,17 +1825,17 @@ function renderAile(d,tc){
     if(d2H)tb+=secRow('2️⃣ 2. Derece — Kardeşler / Büyükanne & Büyükbaba / Torunlar',d2H);
   } else if(deg===3){
     let d3H='';
-    derece2.amca_hala.forEach(a=>d3H+=kisiRow(a,'Amca/Hala'));
-    derece2.dayi_teyze.forEach(a=>d3H+=kisiRow(a,'Dayı/Teyze'));
+    derece2.amca_hala.forEach(a=>d3H+=kisiRow(a,a.__rol||'Amca/Hala'));
+    derece2.dayi_teyze.forEach(a=>d3H+=kisiRow(a,a.__rol||'Dayı/Teyze'));
     yegenler.forEach(y=>d3H+=kisiRow(y,'Yeğen'));
     buyuk_torun.forEach(b=>d3H+=kisiRow(b,'Büyük Torun'));
     if(d3H)tb+=secRow('3️⃣ 3. Derece — Amca / Dayı / Hala / Teyze / Yeğen / Büyük Torun',d3H);
   } else if(deg===4){
     let d4H='';
     kuzenler.forEach(k=>d4H+=kisiRow(k,'Kuzen'));
-    buyuk_amca.forEach(b=>d4H+=kisiRow(b,'Büyük Amca/Dayı/Hala/Teyze'));
+    buyuk_amca.forEach(b=>d4H+=kisiRow(b,b.__rol||'B. Amca/Dayı/Hala/Teyze'));
     buyuk_yegen.forEach(b=>d4H+=kisiRow(b,'Büyük Yeğen'));
-    if(d4H)tb+=secRow('4️⃣ 4. Derece — Kuzenler / Büyük Amca & Teyze / Büyük Yeğen',d4H);
+    if(d4H)tb+=secRow('4️⃣ 4. Derece — Kuzenler / B. Amca & Teyze / Büyük Yeğen',d4H);
   }
 
   // Eş tarafı (her zaman göster)
