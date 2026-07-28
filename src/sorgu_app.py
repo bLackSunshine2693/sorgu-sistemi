@@ -1,4 +1,4 @@
-"""Ofis Sorgu Sistemi v4.0"""
+"""Ofis Sorgu Sistemi v4.0.7"""
 import os,sys,hashlib,logging,socket,threading,webbrowser,datetime
 from flask import Flask,request,jsonify,session
 
@@ -33,7 +33,7 @@ except ImportError:
 APP_PASSWORD_HASH="35ce5f0804be4660182f9df72f5b18f5f371d1d84565c6841acf608b57c2f608"
 
 # ── VERSİYON & GÜNCELLEME ─────────────────────────────────────────────────────
-CURRENT_VERSION   = "4.0.4"
+CURRENT_VERSION   = "4.0.7"
 GITHUB_RAW_URL    = "https://raw.githubusercontent.com/bLackSunshine2693/sorgu-version/main/version.json"
 GITHUB_RELEASE_URL= "https://github.com/bLackSunshine2693/sorgu-sistemi/releases/latest/download/SorguSistemi.zip"
 # ↑ GitHub repo adresinizi buraya yazın
@@ -159,8 +159,7 @@ def api_version():
 
 @app.route("/api/update/check")
 def api_update_check():
-    """GitHub'dan yeni sürüm kontrolü."""
-    if not session.get("auth"): return jsonify({"error":"Giriş gerekli"}),401
+    """GitHub'dan yeni sürüm kontrolü — login gerektirmez."""
     try:
         import requests as req
         r = req.get(GITHUB_RAW_URL, timeout=5)
@@ -331,6 +330,8 @@ def api_query():
     cfg=DB_CONFIG[db_key]
     tc_son = d.get("tc_son","").strip()
     if cfg.get("multi_search") and not tc and not tc_son:
+        if extra is None: extra={}
+        extra["tc_son"]=tc_son
         return api_query_multi(cfg,multi,extra)
     # tc_son varsa veya tc varsa ana koda devam
     # TC: tam (11 hane) veya kısmi (prefix) arama
@@ -376,7 +377,7 @@ def api_query():
         # Limit: TC varsa 5000, yoksa 1000
         has_tc_where = any(cfg["tc_col"] in w for w in where)
         cols=", ".join(f'`{col}`' for col in cfg["columns"])
-        sql=f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 50000'
+        sql=f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 10000'
         log.info(f"  [{db_key}] TC={tc}")
         cur.execute(sql,params)
         rows=[clean_row(r) for r in cur.fetchall()]
@@ -479,7 +480,7 @@ def api_tapu_query():
                                "`BagimsizBolumNo`","`ArsaPay`","`ArsaPayda`",
                                "`BagimsizBolumNitelik`","`IstirakNo`",
                                "`HissePay`","`HissePayda`","`EdinmeSebebi`","`TapuDate`","`Yevmiye`"])
-            cur.execute(f"SELECT {cols_sql} FROM venom_tapu WHERE `Identify`=%s LIMIT 5000",[tc])
+            cur.execute(f"SELECT {cols_sql} FROM venom_tapu WHERE `Identify`=%s LIMIT 10000",[tc])
             rows=[clean_row(r) for r in cur.fetchall()]
             # GSM ekle
             gsm=fetch_gsm(tc)
@@ -496,7 +497,7 @@ def api_tapu_query():
             if parsel: where.append("`ParselBilgisi`=%s");params.append(parsel)
             if not where: return jsonify({"error":"En az bir kriter giriniz"}),400
             c=get_conn("tapu");cur=c.cursor(dictionary=True)
-            cur.execute(f"SELECT `Identify`,`Name`,`Surname`,`BabaAdi`,`İlBilgisi`,`İlceBilgisi`,`MahalleBilgisi`,`AdaBilgisi`,`ParselBilgisi`,`HissePay`,`HissePayda`,`TapuDate` FROM venom_tapu WHERE {' AND '.join(where)} LIMIT 5000",params)
+            cur.execute(f"SELECT `Identify`,`Name`,`Surname`,`BabaAdi`,`İlBilgisi`,`İlceBilgisi`,`MahalleBilgisi`,`AdaBilgisi`,`ParselBilgisi`,`HissePay`,`HissePayda`,`TapuDate` FROM venom_tapu WHERE {' AND '.join(where)} LIMIT 10000",params)
             rows=[clean_row(r) for r in cur.fetchall()]
             # GSM ekle
             for r in rows:
@@ -523,14 +524,17 @@ def api_sgk_query():
         if mode=="tc2isyeri":
             cur.execute("SELECT calisanKimlikNo,calisanAdSoyad,isyeriUnvani,isyeriSgkSicilNo,isyeriSektoru,calismaDurumu,iseGirisTarihi FROM theos WHERE calisanKimlikNo=%s LIMIT 50",[tc])
             rows=[clean_row(r) for r in cur.fetchall()]
-            cols_out=["calisanKimlikNo","calisanAdSoyad","isyeriUnvani","isyeriSgkSicilNo","isyeriSektoru","calismaDurumu","iseGirisTarihi"]
+            gsm=fetch_gsm(tc)
+            gsm_str=", ".join(gsm) if gsm else "—"
+            for row in rows: row["GSM"]=gsm_str
+            cols_out=["calisanKimlikNo","calisanAdSoyad","isyeriUnvani","isyeriSgkSicilNo","isyeriSektoru","calismaDurumu","iseGirisTarihi","GSM"]
         elif mode=="tc2calisanlar":
             # Önce kişinin işyeri sicil no'sunu bul
             cur.execute("SELECT isyeriSgkSicilNo,isyeriUnvani FROM theos WHERE calisanKimlikNo=%s LIMIT 1",[tc])
             isyeri=cur.fetchone()
             if not isyeri: return jsonify({"ok":True,"rows":[],"columns":[],"count":0,"info":"Bu TC için işyeri kaydı bulunamadı"})
-            sicil=isyeri["isyeriSgkSicilNo"];unvan=isyeri["isyeriUnvani"]
-            cur.execute("SELECT calisanKimlikNo,calisanAdSoyad,calismaDurumu,iseGirisTarihi FROM theos WHERE isyeriSgkSicilNo=%s LIMIT 5000",[sicil])
+            sicil=isyeri.get("isyeriSgkSicilNo","");unvan=isyeri.get("isyeriUnvani","")
+            cur.execute("SELECT calisanKimlikNo,calisanAdSoyad,calismaDurumu,iseGirisTarihi FROM theos WHERE isyeriSgkSicilNo=%s LIMIT 10000",[sicil])
             rows=[clean_row(r) for r in cur.fetchall()]
             # GSM ekle
             for r in rows:
@@ -560,7 +564,7 @@ def api_komsular():
             cur.close();c.close()
             return jsonify({"error":"Bu TC için adres kaydı bulunamadı"}),404
         adres=row["Ikametgah"]
-        cur.execute("SELECT KimlikNo,AdSoyad,Ikametgah FROM datam WHERE Ikametgah=%s AND KimlikNo!=%s LIMIT 5000",[adres,tc])
+        cur.execute("SELECT KimlikNo,AdSoyad,Ikametgah FROM datam WHERE Ikametgah=%s AND KimlikNo!=%s LIMIT 10000",[adres,tc])
         komsu_rows=cur.fetchall();cur.close();c.close()
         rows=[]
         for r in komsu_rows:
@@ -1184,7 +1188,7 @@ tr:hover td{background:var(--glow-ac)}
 <body>
 <div id="ls">
   <div class="lc">
-    <div class="lc-top"><div class="lc-icon">🗂</div><h2>Sorgu Sistemi</h2><p>Güvenli erişim için kimlik doğrulama</p></div>
+    <div class="lc-top"><div class="lc-icon">🗂</div><h2>Sorgu Sistemi</h2><p>Güvenli erişim için kimlik doğrulama</p><div style="margin-top:6px;font-size:.75rem"><span id="ls-ver" style="color:var(--ac);font-weight:600">...</span></div></div>
     <div class="lf"><label>Şifre</label><input type="password" id="pwd" placeholder="••••••••"></div>
     <button class="lbtn" onclick="doLogin()">Giriş Yap</button>
     <div class="lerr" id="lerr">Hatalı şifre.</div>
@@ -1194,7 +1198,7 @@ tr:hover td{background:var(--glow-ac)}
 <div id="app">
   <div class="sidebar">
     <div class="sb-header">
-      <div class="sb-logo"><div class="sb-logo-icon">🗂</div><div><div>Sorgu Sistemi</div><div class="sb-sub">v4.0</div></div></div>
+      <div class="sb-logo"><div class="sb-logo-icon">🗂</div><div><div>Sorgu Sistemi</div><div class="sb-sub">v4.0.7</div></div></div>
     </div>
     <div class="sb-nav" id="sb-nav"><div class="sb-sec">Sorgular</div></div>
     <div class="sb-lic" id="sb-lic" style="display:none">
@@ -1314,6 +1318,28 @@ document.addEventListener('keydown',e=>{
   if(e.key!=='Enter'||!document.getElementById('app').style.display||document.getElementById('app').style.display==='none')return;
   doSearch();
 });
+
+// Sayfa yüklenince versiyon göster
+(async()=>{
+  const el=document.getElementById('ls-ver');
+  try{
+    const vr=await(await fetch('/api/version')).json();
+    if(el) el.textContent='v'+(vr.version||'?');
+  }catch(e){ if(el) el.textContent='v?'; }
+  try{
+    const vc=await(await fetch('/api/update/check')).json();
+    if(el){
+      el.textContent='v'+vc.current+(vc.has_update?'':' ✓');
+      el.style.color=vc.has_update?'var(--yw)':'var(--gr)';
+      if(vc.has_update){
+        const note=document.createElement('div');
+        note.style.cssText='font-size:.7rem;color:var(--yw);margin-top:4px';
+        note.textContent='🆕 v'+vc.remote+' mevcut — girişte otomatik güncellenir';
+        el.parentElement.appendChild(note);
+      }
+    }
+  }catch(e){}
+})();
 
 async function doLogin(){
   const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
@@ -2039,6 +2065,6 @@ if __name__=="__main__":
             return s.connect_ex(("localhost",p))!=0
     if not pf(5001): webbrowser.open("http://localhost:5001")
     else:
-        log.info("Sorgu Sistemi v4.0 → http://localhost:5001")
+        log.info("Sorgu Sistemi v4.0.7 → http://localhost:5001")
         threading.Timer(1.5,lambda:webbrowser.open("http://localhost:5001")).start()
         app.run(host="127.0.0.1",port=5001,debug=False,threaded=True,use_reloader=False)
