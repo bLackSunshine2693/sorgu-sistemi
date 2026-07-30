@@ -409,7 +409,7 @@ def api_query_multi(cfg,multi,extra={}):
     try:
         c=get_conn(cfg["db"]);cur=c.cursor(dictionary=True)
         cols=", ".join(f'`{col}`' for col in cfg["columns"])
-        cur.execute(f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 100',params)
+        cur.execute(f'SELECT {cols} FROM {cfg["table"]} WHERE {" AND ".join(where)} LIMIT 1500',params)
         rows=[clean_row(r) for r in cur.fetchall()]
         cols_out=list(rows[0].keys()) if rows else cfg["columns"]
         cur.close();c.close()
@@ -1064,8 +1064,8 @@ HTML_PAGE=r"""<!DOCTYPE html>
 body{background:var(--bg);color:var(--t1);font-family:var(--font);height:100vh;overflow:hidden;display:flex;flex-direction:column}
 
 /* LOGIN */
-#ls{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:var(--bg);z-index:1000}
-.lc{background:var(--s1);border:1px solid var(--b1);border-radius:20px;padding:40px;width:360px;box-shadow:0 20px 60px var(--shadow)}
+#ls{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:radial-gradient(ellipse at 50% 40%,rgba(168,85,247,.08) 0%,var(--bg) 70%);z-index:1000}
+.lc{background:linear-gradient(135deg,var(--s1) 0%,var(--s2) 100%);border:1px solid var(--b1);border-radius:20px;padding:40px;width:360px;box-shadow:0 20px 80px rgba(168,85,247,.2),0 0 0 1px rgba(168,85,247,.1)}
 .lc-top{text-align:center;margin-bottom:24px}
 .lc-icon{font-size:2.5rem;margin-bottom:8px}
 .lc h2{font-size:1.2rem;font-weight:700}
@@ -1074,16 +1074,16 @@ body{background:var(--bg);color:var(--t1);font-family:var(--font);height:100vh;o
 .lf label{display:block;font-size:.72rem;font-weight:600;color:var(--t2);margin-bottom:6px;text-transform:uppercase;letter-spacing:.07em}
 .lf input{width:100%;padding:11px 14px;background:var(--s2);border:1.5px solid var(--b2);border-radius:10px;color:var(--t1);font-size:.95rem;outline:none;font-family:var(--font)}
 .lf input:focus{border-color:var(--ac)}
-.lbtn{width:100%;padding:12px;background:var(--ac);border:none;border-radius:10px;color:#fff;font-size:.92rem;font-weight:700;cursor:pointer;font-family:var(--font)}
+.lbtn{width:100%;padding:12px;background:linear-gradient(135deg,#a855f7,#7c3aed);border:none;border-radius:10px;color:#fff;font-size:.92rem;font-weight:700;cursor:pointer;font-family:var(--font);box-shadow:0 4px 20px rgba(168,85,247,.4)}
 .lbtn:hover{opacity:.9}
 .lerr{margin-top:10px;padding:9px 14px;background:rgba(255,79,107,.1);border:1px solid rgba(255,79,107,.3);border-radius:8px;color:var(--rd);font-size:.82rem;text-align:center;display:none}
 
 /* LAYOUT */
 #app{display:none;height:100vh;flex-direction:row}
-.sidebar{width:220px;background:var(--s1);border-right:1px solid var(--b1);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
+.sidebar{width:220px;background:linear-gradient(180deg,var(--s1) 0%,#0d0919 100%);border-right:1px solid rgba(168,85,247,.15);display:flex;flex-direction:column;flex-shrink:0;overflow:hidden}
 .sb-header{padding:14px 12px 10px;border-bottom:1px solid var(--b1)}
 .sb-logo{font-size:.9rem;font-weight:800;display:flex;align-items:center;gap:8px}
-.sb-logo-icon{width:28px;height:28px;border-radius:7px;background:var(--ac);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0}
+.sb-logo-icon{width:28px;height:28px;border-radius:7px;background:linear-gradient(135deg,#a855f7,#6d28d9);display:flex;align-items:center;justify-content:center;font-size:.85rem;flex-shrink:0;box-shadow:0 2px 8px rgba(168,85,247,.4)}
 .sb-sub{font-size:.65rem;color:var(--t2);margin-top:2px}
 .sb-nav{padding:8px 6px;flex:1;overflow-y:auto}
 .sb-sec{font-size:.6rem;font-weight:700;color:var(--t3);letter-spacing:.1em;text-transform:uppercase;padding:6px 6px 3px}

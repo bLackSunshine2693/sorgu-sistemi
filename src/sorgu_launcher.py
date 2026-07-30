@@ -193,6 +193,16 @@ def main():
         if not ok:
             show_error("Lisans Hatası", f"Sorgu Sistemi çalıştırılamadı:\n\n{msg}\n\nYöneticinizle iletişime geçin.")
             return
+        # Makine ID kontrolü (USB_ANY ise atla)
+        lic_machine = lic_data.get("machine_id","")
+        if lic_machine and lic_machine != "USB_ANY":
+            from sorgu_license import get_machine_id as _gmid
+            cur_mid = _gmid()
+            if cur_mid != lic_machine:
+                show_error("Lisans Hatası",
+                    f"Bu lisans başka bir bilgisayar için oluşturulmuş.\n\nYöneticinizle iletişime geçin.")
+                return
+
         # USB serial kontrolü
         if IS_USB and lic_data.get("usb_serial"):
             cur_serial = get_usb_serial()
